@@ -91,6 +91,10 @@ def find_mechanics(lat=None, lon=None, state=None, query_text="", limit=3):
         return []
 
     # Filtering logic
+    # 0. If no query or location filters provided, return all known mechanics up to limit
+    if lat is None and lon is None and not state and not query_text.strip():
+        return results[:limit]
+
     # 1. By distance if coords present (strictly within coverage radius or max 100 miles)
     if lat is not None and lon is not None:
         nearby = [m for m in results if m["distance_miles"] <= max(m.get("radius", 90), 100)]

@@ -66,28 +66,18 @@ def verify_and_ground_fuel_output(text: str, location_str: str = "", state_code:
     state_avg = bench["diesel"] if bench else 6.25
     state_name = bench["name"] if bench else detected_state
 
-    # 1. Check for outdated prices (e.g. $3.xx when current average is $6.xx - $8.xx)
-    found_prices = re.findall(r'\$([0-9]+\.[0-9]{2})', text)
-    has_absurd_price = False
-    for p_str in found_prices:
-        p_val = float(p_str)
-        # If price is less than 60% of state average, it's definitely an outdated hallucination
-        if p_val < state_avg * 0.60:
-            has_absurd_price = True
-            break
-
-    # If absurd price found or price block needs grounding:
-    if has_absurd_price and state_avg > 5.0:
-        # Replace outdated prices with the real certified state range
+    # 1. Replace any price that is ridiculously below state average with certified state range
+    if state_avg > 5.0:
         range_low = round(state_avg * 0.95, 2)
         range_high = round(state_avg * 1.05, 2)
-        
-        # Replace hallucinated $[3.xx] mentions with verified state range
-        text = re.sub(
-            r'(?i)(?:💵|цена|дизель:?\s*)\$3\.[0-9]{2}(?:/gal)?',
-            f"💵 Ориентир: <b>${range_low:.2f} – ${range_high:.2f}/gal</b>",
-            text
-        )
+
+        def replace_outdated_price(m):
+            val = float(m.group(1))
+            if val < state_avg * 0.65:
+                return f"${range_low:.2f} – ${range_high:.2f}"
+            return m.group(0)
+
+        text = re.sub(r'\$([0-9]+\.[0-9]{2})', replace_outdated_price, text)
 
     # 2. Ensure IFTA and official AAA state average is clearly stated
     if "IFTA" in text or "Ориентир цен" in text:
@@ -118,7 +108,7 @@ def verify_and_ground_mechanics_output(text: str) -> str:
         print("[CRITICAL] Grounding verifier intercepted fictional 555 phone number! Replacing with verified 24/7 lines...")
         # Replace with verified official lines
         text = re.sub(
-            r'• 📞 [^\n]+555[- ]?01\d{2}[^\n]+',
+            r'• 📞[^\n]*555[- ]?01\d{2}[^\n]*',
             '• 📞 <b>Официальная 24/7 линия вызова:</b> <a href="tel:18006875683">1-800-687-5683</a> (Love\'s Truck Care Roadside)',
             text
         )

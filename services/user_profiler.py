@@ -289,6 +289,7 @@ def set_manual_rig(telegram_id: int, rig_choice: str) -> dict:
             conn.close()
     return get_or_create_user_profile(telegram_id)
 
+
 def set_manual_role(telegram_id: int, role_choice: str) -> dict:
     role_name = "Оунер-Оператор" if role_choice == "owner" else "Водитель-наймит"
     conn = None
@@ -308,6 +309,7 @@ def set_manual_role(telegram_id: int, role_choice: str) -> dict:
         if conn:
             conn.close()
     return get_or_create_user_profile(telegram_id)
+
 
 def reset_user_profile_data(telegram_id: int) -> dict:
     conn = None
@@ -331,4 +333,9 @@ def reset_user_profile_data(telegram_id: int) -> dict:
         if conn:
             conn.close()
     return get_or_create_user_profile(telegram_id)
+
+# Convenience alias
+get_user_profile = get_or_create_user_profile
+
+
 
