@@ -214,13 +214,13 @@ def generate_fallback_fuel_for_geo(geo_info: dict, driver_setup: str = None, lat
         tip3 = "Прямые выезды без тупых углов, ровный асфальт."
 
     if geo_lat and geo_lon:
-        maps_link_loves = f'<a href="https://www.google.com/maps/search/?api=1&amp;query=Love%27s+Travel+Stop&amp;ll={geo_lat},{geo_lon}">🗺️ Ближайший Love\'s на карте</a>'
-        maps_link_pilot = f'<a href="https://www.google.com/maps/search/?api=1&amp;query=Pilot+Flying+J&amp;ll={geo_lat},{geo_lon}">🗺️ Ближайший Pilot/Flying J</a>'
-        maps_link_ta = f'<a href="https://www.google.com/maps/search/?api=1&amp;query=TA+Petro+Truck+Stop&amp;ll={geo_lat},{geo_lon}">🗺️ Ближайший TA/Petro</a>'
+        maps_link_loves = f'<a href="https://www.google.com/maps/search/?api=1&amp;query=Love%27s+Travel+Stop&amp;ll={geo_lat},{geo_lon}">🗺️ Маршрут в Навигатор (Love\'s)</a>'
+        maps_link_pilot = f'<a href="https://www.google.com/maps/search/?api=1&amp;query=Pilot+Flying+J&amp;ll={geo_lat},{geo_lon}">🗺️ Маршрут в Навигатор (Pilot/Flying J)</a>'
+        maps_link_ta = f'<a href="https://www.google.com/maps/search/?api=1&amp;query=TA+Petro+Truck+Stop&amp;ll={geo_lat},{geo_lon}">🗺️ Маршрут в Навигатор (TA/Petro)</a>'
     else:
-        maps_link_loves = make_maps_link(f"Love's Travel Stop {city} {state}", f"Love's {city}")
-        maps_link_pilot = make_maps_link(f"Pilot Travel Center {city} {state}", f"Pilot {city}")
-        maps_link_ta = make_maps_link(f"TA Petro Truck Stop {city} {state}", f"TA/Petro {city}")
+        maps_link_loves = make_maps_link(f"Love's Travel Stop {city} {state}", f"Маршрут в Навигатор (Love's {city})")
+        maps_link_pilot = make_maps_link(f"Pilot Travel Center {city} {state}", f"Маршрут в Навигатор (Pilot {city})")
+        maps_link_ta = make_maps_link(f"TA Petro Truck Stop {city} {state}", f"Маршрут в Навигатор (TA/Petro {city})")
 
     return (
         f"⛽ <b>Дизель под твой сетап:</b> {driver_setup}\n"
@@ -254,7 +254,11 @@ def generate_fuel_recommendations(location_query: str, driver_setup: str = None,
             lat = geo.get("lat")
             lon = geo.get("lon")
     else:
-        geo = {"display_name": location_query, "city": "", "state": "", "lat": lat, "lon": lon}
+        rev = reverse_geocode(lat, lon)
+        parts = [p.strip() for p in rev.split(",")]
+        st = parts[-1] if len(parts) >= 1 else "US"
+        ct = parts[-2] if len(parts) >= 2 else (parts[0] if parts else "")
+        geo = {"display_name": rev or location_query, "city": ct, "state": st, "lat": lat, "lon": lon}
 
     resolved_loc_str = geo.get("display_name") if geo else location_query
     city_st = f"{geo.get('city', '')}, {geo.get('state', '')}".strip(", ") if geo else location_query
@@ -323,20 +327,28 @@ def generate_fuel_recommendations(location_query: str, driver_setup: str = None,
                 }
             }
         }
-        req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers={"Content-Type": "application/json"})
-        try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                data = json.loads(resp.read().decode())
-                candidates = data.get("candidates", [])
-                if candidates:
-                    parts = candidates[0].get("content", {}).get("parts", [])
-                    if parts:
-                        raw_text = parts[0].get("text", "").strip()
-                        if raw_text:
-                            html_text = markdown_to_telegram_html(raw_text)
-                            return multi_agent_sense_check(html_text, context_type="fuel", location_str=resolved_loc_str, state_code=bench["code"])
-        except Exception as e:
-            print(f"[WARN] Gemini fuel call failed ({e}), using dynamic geo fallback...")
+        for attempt in range(2):
+            try:
+                req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers={"Content-Type": "application/json"})
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    data = json.loads(resp.read().decode())
+                    candidates = data.get("candidates", [])
+                    if candidates:
+                        parts = candidates[0].get("content", {}).get("parts", [])
+                        if parts:
+                            raw_text = parts[0].get("text", "").strip()
+                            if raw_text:
+                                html_text = markdown_to_telegram_html(raw_text)
+                                return multi_agent_sense_check(html_text, context_type="fuel", location_str=resolved_loc_str, state_code=bench["code"])
+            except urllib.error.HTTPError as e:
+                if e.code == 429 and attempt == 0:
+                    time.sleep(2.5)
+                    continue
+                print(f"[WARN] Gemini fuel call failed (HTTP {e.code}), using dynamic geo fallback...")
+                break
+            except Exception as e:
+                print(f"[WARN] Gemini fuel call failed ({e}), using dynamic geo fallback...")
+                break
 
     # Dynamic fallback based on real resolved entity + verified sense check
     fallback_res = generate_fallback_fuel_for_geo(geo, driver_setup, lat=lat, lon=lon)

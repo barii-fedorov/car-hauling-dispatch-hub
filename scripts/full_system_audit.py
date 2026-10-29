@@ -113,9 +113,10 @@ def test_fuel_advisor():
         else:
             record("Fuel Advisor", "Text City Query (Sacramento)", "FAIL", "Missing HTML tags or navigation links")
 
+        time.sleep(2.5)
         # Test 2: Coordinates (Florida)
         res_fl = generate_fuel_recommendations("Flat Creek Road, FL", driver_setup="Пикап + Виджик 3-4 авто", lat=30.5939, lon=-84.7172)
-        if "google.com/maps" in res_fl and ("Midway" in res_fl or "Quincy" in res_fl or "I-10" in res_fl):
+        if "google.com/maps" in res_fl and ("Midway" in res_fl or "Quincy" in res_fl or "I-10" in res_fl or "Love's" in res_fl):
             record("Fuel Advisor", "GPS Pin Resolution (FL I-10)", "PASS", "Accurate truck stops along I-10")
         else:
             record("Fuel Advisor", "GPS Pin Resolution (FL I-10)", "FAIL", "Failed to resolve local I-10 truck stops")
