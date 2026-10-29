@@ -11,6 +11,7 @@ Provides structured verification of freight brokers:
 import os
 import re
 import json
+import time
 import urllib.request
 import urllib.error
 
@@ -114,17 +115,24 @@ def query_gemini_for_broker_intelligence(query_text: str) -> str:
             }
         }
     }
-    try:
-        req = urllib.request.Request(GEMINI_URL, data=json.dumps(payload).encode(), headers=headers)
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            data = json.loads(resp.read().decode())
-            candidates = data.get("candidates", [])
-            if candidates:
-                parts = candidates[0].get("content", {}).get("parts", [])
-                if parts:
-                    return parts[0].get("text", "").strip()
-    except Exception as e:
-        print(f"[WARN] Gemini broker check failed: {e}")
+    for attempt in range(2):
+        try:
+            req = urllib.request.Request(GEMINI_URL, data=json.dumps(payload).encode(), headers=headers)
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = json.loads(resp.read().decode())
+                candidates = data.get("candidates", [])
+                if candidates:
+                    parts = candidates[0].get("content", {}).get("parts", [])
+                    if parts:
+                        return parts[0].get("text", "").strip()
+        except urllib.error.HTTPError as e:
+            if e.code == 429 and attempt == 0:
+                time.sleep(2.5)
+                continue
+            print(f"[WARN] Gemini broker check failed (HTTP {e.code}): {e}")
+        except Exception as e:
+            print(f"[WARN] Gemini broker check failed: {e}")
+            break
     return None
 
 def verify_broker(user_input: str) -> str:
