@@ -355,6 +355,92 @@ def send_draft_for_approval(post_id, post_type, title, text, image_url=None, thr
 
     return True
 
+def publish_road_alert_directly(post_id, title, text, source_url=None, source_name=None):
+    """
+    Instantly publishes a strictly 2-line road alert directly to the public channel (no approval needed),
+    and mirrors a notification to Cabinet Topic 23 with source link for admin oversight.
+    """
+    if not BOT_TOKEN:
+        print("[ERROR] TELEGRAM_BOT_TOKEN is missing!")
+        return False
+
+    formatted_text = markdown_to_telegram_html(text)
+    channel_msg_id = None
+
+    # 1. Instant publication to public channel "Грузовики на базу"
+    channel_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": CHANNEL_ID,
+        "text": formatted_text,
+        "parse_mode": "HTML"
+    }
+    try:
+        req = urllib.request.Request(channel_url, data=json.dumps(payload).encode("utf-8"), headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            res_data = json.loads(resp.read().decode())
+            channel_msg_id = res_data["result"]["message_id"]
+            print(f"[OK] Instant Road Alert posted to Channel: {title} (msg {channel_msg_id})")
+    except Exception as e:
+        print(f"[WARN] Instant alert channel post HTML failed ({e}), retrying plain text...")
+        payload["text"] = strip_html_tags(formatted_text)
+        payload.pop("parse_mode", None)
+        try:
+            req = urllib.request.Request(channel_url, data=json.dumps(payload).encode("utf-8"), headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                res_data = json.loads(resp.read().decode())
+                channel_msg_id = res_data["result"]["message_id"]
+        except Exception as ex:
+            print(f"[ERROR] Failed to post instant alert to channel: {ex}")
+            return False
+
+    # 2. Mirror to Cabinet Topic 23 with source link (no moderation buttons needed)
+    cabinet_msg_id = None
+    cabinet_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    cab_header = "🚨 <b>[ОПУБЛИКОВАНО В КАНАЛ: ДОРОЖНЫЙ АЛЕРТ]</b>\n"
+    if source_url:
+        src_label = source_name or "Оригинал источника"
+        cab_header += f"🔗 <b>Источник:</b> <a href=\"{source_url}\">{src_label}</a>\n\n"
+    else:
+        cab_header += "\n"
+
+    cab_full_text = cab_header + formatted_text
+    cab_payload = {
+        "chat_id": ADMIN_CHAT_ID,
+        "message_thread_id": TOPIC_ALERTS_ID,
+        "text": cab_full_text,
+        "parse_mode": "HTML"
+    }
+    try:
+        req = urllib.request.Request(cabinet_url, data=json.dumps(cab_payload).encode("utf-8"), headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            res_data = json.loads(resp.read().decode())
+            cabinet_msg_id = res_data["result"]["message_id"]
+            print(f"[OK] Road Alert mirrored to Cabinet Topic 23: {title}")
+    except Exception as e:
+        print(f"[WARN] Failed to mirror alert to Cabinet: {e}")
+
+    # 3. Register in PostgreSQL
+    try:
+        import psycopg2
+        conn = psycopg2.connect(host=PG_HOST, port=PG_PORT, user=PG_USER, password=PG_PASS, dbname=PG_DB)
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO telegram_posts (post_id, post_type, title, summary, content, primary_category, status, approved_by, published_at, channel_message_id, cabinet_message_id)
+            VALUES (%s, 'alert', %s, %s, %s, 'Accidents', 'published', 'Auto (Instant Alert)', NOW(), %s, %s)
+            ON CONFLICT (post_id) DO UPDATE SET 
+                content = EXCLUDED.content, 
+                status = 'published', 
+                published_at = NOW(),
+                channel_message_id = EXCLUDED.channel_message_id,
+                cabinet_message_id = EXCLUDED.cabinet_message_id;
+        """, (post_id, title, text[:200], text, channel_msg_id, cabinet_msg_id))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"[WARN] Failed to insert published alert into DB: {e}")
+
+    return True
+
 def run_news_pipeline():
     print(f"[{datetime.now()}] [NEWS PIPELINE] Checking for high-impact car hauler news...")
     items = fetch_feed_items()
@@ -403,18 +489,15 @@ def run_alerts_pipeline():
         alert_text = generate_road_alert_post(item)
         if alert_text:
             post_id = f"alert_{int(time.time())}_{abs(hash(item['guid'])) % 10000}"
-            if send_draft_for_approval(
+            if publish_road_alert_directly(
                 post_id, 
-                "alert", 
                 item["title"], 
                 alert_text, 
-                image_url=None, 
-                thread_id=TOPIC_ALERTS_ID,
                 source_url=item.get("link"),
                 source_name=item.get("source")
             ):
                 mark_processed(item["guid"], item["title"], "alert")
-                print(f"[SUBMITTED TO CABINET TOPIC 23] {item['title']}")
+                print(f"[INSTANT ROAD ALERT PUBLISHED TO CHANNEL] {item['title']}")
                 count += 1
                 if count >= 2:
                     break
