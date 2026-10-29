@@ -1,0 +1,242 @@
+{
+  "dashboard": {
+    "id": null,
+    "uid": "user-profiles-overview",
+    "title": "User Profiles & Driver Intelligence Overview",
+    "tags": ["users", "profiles", "drivers", "telegram", "car-hauling"],
+    "timezone": "browser",
+    "schemaVersion": 39,
+    "version": 1,
+    "refresh": "1m",
+    "time": {
+      "from": "now-7d",
+      "to": "now"
+    },
+    "panels": [
+      {
+        "id": 1,
+        "title": "Всего профилей в базе",
+        "type": "stat",
+        "gridPos": { "h": 4, "w": 4, "x": 0, "y": 0 },
+        "datasource": { "type": "grafana-postgresql-datasource", "uid": "dg2p90s21bz7kd" },
+        "targets": [
+          {
+            "format": "table",
+            "rawSql": "SELECT COUNT(*) AS total_users FROM user_profiles;",
+            "refId": "A"
+          }
+        ],
+        "options": {
+          "colorMode": "value",
+          "graphMode": "none",
+          "justifyMode": "center"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "color": { "mode": "fixed", "fixedColor": "blue" }
+          }
+        }
+      },
+      {
+        "id": 2,
+        "title": "Оунеры определены (%)",
+        "type": "gauge",
+        "gridPos": { "h": 4, "w": 5, "x": 4, "y": 0 },
+        "datasource": { "type": "grafana-postgresql-datasource", "uid": "dg2p90s21bz7kd" },
+        "targets": [
+          {
+            "format": "table",
+            "rawSql": "SELECT ROUND(COUNT(CASE WHEN has_owner_status THEN 1 END)::numeric / NULLIF(COUNT(*),0)::numeric * 100, 1) AS owner_pct FROM user_profiles;",
+            "refId": "A"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percent",
+            "min": 0,
+            "max": 100,
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                { "color": "red", "value": null },
+                { "color": "yellow", "value": 50 },
+                { "color": "green", "value": 75 }
+              ]
+            }
+          }
+        }
+      },
+      {
+        "id": 3,
+        "title": "Сетап/Машина известна (%)",
+        "type": "gauge",
+        "gridPos": { "h": 4, "w": 5, "x": 9, "y": 0 },
+        "datasource": { "type": "grafana-postgresql-datasource", "uid": "dg2p90s21bz7kd" },
+        "targets": [
+          {
+            "format": "table",
+            "rawSql": "SELECT ROUND(COUNT(CASE WHEN has_equipment_info THEN 1 END)::numeric / NULLIF(COUNT(*),0)::numeric * 100, 1) AS equip_pct FROM user_profiles;",
+            "refId": "A"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percent",
+            "min": 0,
+            "max": 100,
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                { "color": "red", "value": null },
+                { "color": "yellow", "value": 50 },
+                { "color": "green", "value": 80 }
+              ]
+            }
+          }
+        }
+      },
+      {
+        "id": 4,
+        "title": "Средний уровень довольства",
+        "type": "stat",
+        "gridPos": { "h": 4, "w": 5, "x": 14, "y": 0 },
+        "datasource": { "type": "grafana-postgresql-datasource", "uid": "dg2p90s21bz7kd" },
+        "targets": [
+          {
+            "format": "table",
+            "rawSql": "SELECT ROUND(AVG(satisfaction_score) * 100, 1) AS avg_satisfaction FROM user_profiles;",
+            "refId": "A"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percent",
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                { "color": "red", "value": null },
+                { "color": "yellow", "value": 70 },
+                { "color": "green", "value": 85 }
+              ]
+            }
+          }
+        }
+      },
+      {
+        "id": 5,
+        "title": "Высокая уверенность профиля (>80%)",
+        "type": "stat",
+        "gridPos": { "h": 4, "w": 5, "x": 19, "y": 0 },
+        "datasource": { "type": "grafana-postgresql-datasource", "uid": "dg2p90s21bz7kd" },
+        "targets": [
+          {
+            "format": "table",
+            "rawSql": "SELECT COUNT(*) AS high_conf_users FROM user_profiles WHERE role_confidence >= 0.80;",
+            "refId": "A"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "color": { "mode": "fixed", "fixedColor": "green" }
+          }
+        }
+      },
+      {
+        "id": 6,
+        "title": "Распределение по ролям (Оунеры, Водители, Диспетчеры)",
+        "type": "bargauge",
+        "gridPos": { "h": 6, "w": 12, "x": 0, "y": 4 },
+        "datasource": { "type": "grafana-postgresql-datasource", "uid": "dg2p90s21bz7kd" },
+        "targets": [
+          {
+            "format": "table",
+            "rawSql": "SELECT user_role AS metric, COUNT(*) AS value FROM user_profiles GROUP BY user_role ORDER BY value DESC;",
+            "refId": "A"
+          }
+        ],
+        "options": {
+          "displayMode": "gradient",
+          "orientation": "horizontal",
+          "showUnfilled": true
+        },
+        "fieldConfig": {
+          "defaults": {
+            "color": { "mode": "palette-classic" }
+          }
+        }
+      },
+      {
+        "id": 7,
+        "title": "Сетапы автовозов (Стингеры vs Виджики vs Хай-Маунты)",
+        "type": "piechart",
+        "gridPos": { "h": 6, "w": 12, "x": 12, "y": 4 },
+        "datasource": { "type": "grafana-postgresql-datasource", "uid": "dg2p90s21bz7kd" },
+        "targets": [
+          {
+            "format": "table",
+            "rawSql": "SELECT truck_type AS metric, COUNT(*) AS value FROM user_profiles GROUP BY truck_type ORDER BY value DESC;",
+            "refId": "A"
+          }
+        ],
+        "options": {
+          "legend": { "displayMode": "list", "placement": "right" },
+          "pieType": "donut"
+        }
+      },
+      {
+        "id": 8,
+        "title": "📋 Сводная таблица профилей пользователей (100% Анонимно, без PII)",
+        "type": "table",
+        "gridPos": { "h": 12, "w": 24, "x": 0, "y": 10 },
+        "datasource": { "type": "grafana-postgresql-datasource", "uid": "dg2p90s21bz7kd" },
+        "targets": [
+          {
+            "format": "table",
+            "rawSql": "SELECT * FROM v_user_profiles_overview;",
+            "refId": "A"
+          }
+        ],
+        "options": {
+          "showHeader": true,
+          "sortBy": [{ "displayName": "Активность", "desc": true }]
+        },
+        "fieldConfig": {
+          "defaults": {
+            "custom": {
+              "align": "auto",
+              "cellOptions": { "type": "auto" },
+              "inspect": false
+            }
+          },
+          "overrides": [
+            {
+              "matcher": { "id": "byName", "options": "Статус оунера" },
+              "properties": [{ "id": "custom.width", "value": 130 }]
+            },
+            {
+              "matcher": { "id": "byName", "options": "Сетап известен" },
+              "properties": [{ "id": "custom.width", "value": 130 }]
+            },
+            {
+              "matcher": { "id": "byName", "options": "Телефон" },
+              "properties": [{ "id": "custom.width", "value": 100 }]
+            },
+            {
+              "matcher": { "id": "byName", "options": "MC номер" },
+              "properties": [{ "id": "custom.width", "value": 110 }]
+            },
+            {
+              "matcher": { "id": "byName", "options": "Уровень довольства" },
+              "properties": [{ "id": "custom.width", "value": 160 }]
+            },
+            {
+              "matcher": { "id": "byName", "options": "Обращений" },
+              "properties": [{ "id": "custom.width", "value": 110 }]
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "overwrite": true
+}

@@ -26,6 +26,11 @@ from fuel_advisor import (
     extract_setup_and_cargo,
     generate_fuel_recommendations
 )
+from user_profiler import (
+    analyze_and_update_profile,
+    get_or_create_user_profile,
+    get_profile_ai_context
+)
 
 # Config & Credentials loaded securely from Environment Variables
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -177,13 +182,20 @@ def ask_gemini_direct(prompt):
         print(f"[ERROR] Gemini direct call failed: {e}")
     return None
 
-def ask_gemini(user_message):
+def ask_gemini(user_message, chat_id=None):
+    profile_context = ""
+    if chat_id:
+        try:
+            profile_context = get_profile_ai_context(chat_id) + "\n\n"
+        except Exception as e:
+            print(f"[WARN] Failed to get profile context: {e}")
+
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key={GEMINI_KEY}"
     payload = {
         "contents": [
             {
                 "role": "user",
-                "parts": [{"text": f"SYSTEM INSTRUCTIONS:\n{SYSTEM_PROMPT}\n\nUSER MESSAGE:\n{user_message}"}]
+                "parts": [{"text": f"SYSTEM INSTRUCTIONS:\n{SYSTEM_PROMPT}\n\n{profile_context}USER MESSAGE:\n{user_message}"}]
             }
         ],
         "generationConfig": {
@@ -218,6 +230,17 @@ def process_message(msg):
     from_user = msg.get("from", {})
     username = from_user.get("username", from_user.get("first_name", "оунер"))
     thread_id = msg.get("message_thread_id")
+
+    if not chat_id or (not text and not location):
+        return
+
+    # 1. Dynamic User Profiling in PostgreSQL
+    loc_str_quick = None
+    if location:
+        lat = location.get("latitude")
+        lon = location.get("longitude")
+        loc_str_quick = reverse_geocode(lat, lon)
+    profile = analyze_and_update_profile(chat_id, text=text, location_str=loc_str_quick)
 
     if not chat_id or (not text and not location):
         return
@@ -355,24 +378,34 @@ def process_message(msg):
 
     # A. Did driver send location pin OR are they responding to fuel request?
     if location or session_state == "awaiting_fuel_details":
-        send_chat_action(chat_id, "find_location")
-        if location:
+        loc_str = loc_str_quick or session.get("last_query") or text
+        if location and not loc_str_quick:
             lat = location.get("latitude")
             lon = location.get("longitude")
             loc_str = reverse_geocode(lat, lon)
-        else:
-            loc_str = text
 
         setup, cargo = extract_setup_and_cargo(text)
-        driver_setup = setup or session.get("driver_setup") or "Стингер 9-кар (Class 8)"
-        cargo_type = cargo or session.get("cargo_type") or "Груженый 7-8 авто"
+        known_truck = profile.get("truck_type") if profile.get("truck_type") != "Неизвестно" else None
+        driver_setup = setup or session.get("driver_setup") or known_truck
+        cargo_type = cargo or session.get("cargo_type") or (profile.get("typical_cargo") if profile.get("typical_cargo") != "Не указан" else None) or "Груженый"
+
+        # If driver rig is completely unknown: DO NOT GUESS! Politely ask the driver once.
+        if not driver_setup:
+            set_driver_session(chat_id, state="awaiting_fuel_details", last_query=loc_str)
+            ask_rig_text = (
+                f"⛽ <b>Заправка автовоза:</b> Локацию принял (📍 <i>{loc_str}</i>)!\n"
+                "Подскажи, на каком траке идешь — <b>стингер 9-кар</b> или <b>пикап с виджиком</b>? "
+                "Я сразу запомню твой сетап в базе, чтобы подбирать подходящие колонки (Truck Lanes vs RV) и высоту навеса!"
+            )
+            send_telegram_message(chat_id, ask_rig_text, reply_to_message_id=msg_id)
+            return
 
         # Immediate fast status message as requested by user
-        ack_text = "⏳ <b>Принял точку!</b> Сканирую трассу и проверяю актуальные цены на солярку под твой сетап... Это может занять около минуты."
+        ack_text = f"⏳ <b>Принял точку!</b> Сканирую трассу и проверяю актуальные цены на солярку для твоего сетапа ({driver_setup})... Это может занять около минуты."
         ack_msg = send_telegram_message(chat_id, ack_text, reply_to_message_id=msg_id)
         ack_msg_id = ack_msg.get("result", {}).get("message_id") if ack_msg else None
 
-        send_chat_action(chat_id, "typing")
+        send_chat_action(chat_id, "find_location")
         fuel_answer = generate_fuel_recommendations(loc_str, driver_setup=driver_setup, cargo=cargo_type)
         set_driver_session(chat_id, state="idle", driver_setup=driver_setup, cargo_type=cargo_type)
 
@@ -396,7 +429,7 @@ def process_message(msg):
         ])
         
         if setup and has_specific_location:
-            ack_text = "⏳ <b>Секунду!</b> Пробиваю заправки и цены на дизель по маршруту... Это может занять около минуты."
+            ack_text = f"⏳ <b>Секунду!</b> Пробиваю заправки и цены на дизель для {setup}... Это может занять около минуты."
             ack_msg = send_telegram_message(chat_id, ack_text, reply_to_message_id=msg_id)
             ack_msg_id = ack_msg.get("result", {}).get("message_id") if ack_msg else None
 
@@ -421,8 +454,8 @@ def process_message(msg):
     # Indicate typing to user
     send_chat_action(chat_id, "typing")
 
-    # Generate answer via Council of Agents
-    answer = ask_gemini(text)
+    # Generate answer via Council of Agents (personalized with user profile memory)
+    answer = ask_gemini(text, chat_id=chat_id)
 
     # Reply to user
     send_telegram_message(chat_id, answer, reply_to_message_id=msg_id)
