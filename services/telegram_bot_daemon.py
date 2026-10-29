@@ -38,6 +38,7 @@ from user_profiler import (
 from broker_verifier import verify_broker
 from claim_generator import handle_claim_command
 from overhang_advisor import get_overhang_guide
+from repair_service import handle_repair_inquiry
 
 # Config & Credentials loaded securely from Environment Variables
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -371,6 +372,7 @@ def process_message(msg):
             "Мы прикрываем твою спину на дороге 24/7. Наш принцип — <b>водитель всегда прав</b>.\n\n"
             "🔥 <b>Быстрые команды в меню:</b>\n"
             "• ⛽ <code>/fuel</code> — Найти дешевый дизель по геолокации\n"
+            "• 🔧 <code>/repair</code> — Свои проверенные мастера (кэш/Zelle, без репортов в DOT)\n"
             "• 🔍 <code>/broker MC#</code> — Проверка брокера, бонда $75k и срока оплаты\n"
             "• ⚖️ <code>/claim</code> — Претензии на Детеншен ($75/ч) и срыв TONU ($250)\n"
             "• 📏 <code>/overhang [Штат]</code> — Свесы, габариты и правила весовых\n"
@@ -386,6 +388,7 @@ def process_message(msg):
         help_text = (
             "🆘 <b>ДИСПЕТЧЕРСКАЯ ПОМОЩЬ И КОМАНДЫ БОТА:</b>\n\n"
             "• ⛽ <code>/fuel</code> — Поиск дешевого дизеля и трак-стопов по GPS\n"
+            "• 🔧 <code>/repair</code> — Выездные мастера и сварка автовозов (кэш/без репортов)\n"
             "• 🔍 <code>/broker MC#</code> — Проверка брокера, бонда $75,000 и срока оплаты\n"
             "• ⚖️ <code>/claim</code> — Официальные претензии на Детеншен ($75/ч) и TONU ($250)\n"
             "• 📏 <code>/overhang [Штат]</code> — Допустимые свесы, высота и веса\n"
@@ -395,6 +398,26 @@ def process_message(msg):
             "<i>'Сколько взять за неходовую Теслу?', 'Какая солярка дешевле в Вайоминге?', 'Коп выписал тикет за свес в Пенсильвании — что делать?'</i> — Совет ответит сразу!"
         )
         send_telegram_message(chat_id, help_text, reply_to_message_id=msg_id)
+        return
+
+    # Repair & Confidential Mechanics Directory
+    is_repair_inquiry = (
+        text.startswith("/repair") or
+        text.strip().lower() in ["ремонт", "механик", "мастер", "починить", "сломался"] or
+        any(k in text.lower() for k in [
+            "лопнул шланг", "течет гидравлика", "вытек цилиндр", "нужен механик",
+            "нужен ремонт", "сломалась рампа", "нужен сварщик", "найти мастера",
+            "сварка алюминия", "пневмоподушка", "force regen", "дерейт"
+        ])
+    )
+    if is_repair_inquiry:
+        parts = text.split(maxsplit=1)
+        q = parts[1] if (len(parts) > 1 and text.startswith("/repair")) else text
+        lat = location.get("latitude") if location else None
+        lon = location.get("longitude") if location else None
+        loc_desc = loc_str_quick or (f"{lat:.2f}, {lon:.2f}" if lat else None)
+        repair_card = handle_repair_inquiry(text=q, lat=lat, lon=lon, location_str=loc_desc)
+        send_telegram_message(chat_id, repair_card, reply_to_message_id=msg_id)
         return
 
     # Profile command
@@ -763,6 +786,7 @@ def setup_telegram_commands():
         return
     commands = [
         {"command": "fuel", "description": "⛽ Дешевый дизель по геолокации"},
+        {"command": "repair", "description": "🔧 Свой ремонт и выездные мастера (Cash)"},
         {"command": "broker", "description": "🔍 Проверка брокера по MC (бонд $75k)"},
         {"command": "claim", "description": "⚖️ Претензия: Детеншен ($75/ч) / TONU"},
         {"command": "overhang", "description": "📏 Свесы, габариты и правила по штатам"},
