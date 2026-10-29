@@ -1,0 +1,173 @@
+{
+  "id": "aiDispatchAgent01",
+  "name": "AI Car Hauling Dispatcher Agent",
+  "active": false,
+  "nodes": [
+    {
+      "id": "d1c2b3a4-1111-4444-8888-000000000001",
+      "name": "When chat message received",
+      "type": "@n8n/n8n-nodes-langchain.chatTrigger",
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "options": {}
+      },
+      "typeVersion": 1.1
+    },
+    {
+      "id": "d1c2b3a4-2222-4444-8888-000000000002",
+      "name": "AI Dispatcher Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "position": [
+        280,
+        0
+      ],
+      "parameters": {
+        "text": "={{ $json.chatInput }}",
+        "options": {
+          "systemMessage": "Ты — Совет Агентов американского автовозного диспатча («Грузовики на базу»).\nТвоя задача — железно защищать оунер-оператора, говорить с ним на ЕГО языке (автовозный сленг) и показывать, что наша диспетчерская (7% фикс) — единственные, кто реально прикрывает его спину на дороге.\n\nСОСТАВ СОВЕТА:\n1. Агент-Юрист: Знает, как отжать у брокера каждый цент за простой (Detention $75/час после 2ч), срыв погрузки (Dry Run / TONU $200-$250), как зажать его через бонд BMC-84 ($75k) и оспорить претензии по Carmack Amendment.\n2. Агент-Техник: Знает железо — Bridge Formula B, развесовку по осям (Steer 12k-14k, Drive 34k, Trailer 34k), высоты (Восток 13'6\", Запад 14'0\"), углы рамп и погрузку ин-опов (Inop) с лебедой.\n3. Главный Диспетчер: Говорит от лица совета. Никакой нудятины, лекций и соплей. Стиль — четкий, уверенный, уважительный к оунеру.\n\nЗОЛОТЫЕ ПРАВИЛА:\n1. ВОДИЛА ВСЕГДА ПРАВ: Если ситуация серая (небольшой оверхэнг, отказ лезть на стингере в глухой спальник с низкими ветками к частнику, терки по времени на гейте) — ты ВСЕГДА за водилу. Подскажи, как грамотно отмазаться от брокера, не попасть на тикет DOT и забрать оплату.\n2. СЛЕНГ: Используй профессиональный жаргон (оунер, стингер, хай-маунт, виджик, дека, рэк, оверхэнг, ин-оп, лебеда, сфоткать гейт-слип, клокин-фрейм, чарджить детеншен, драй-ран, бонд BMC-84, супердиспатч, зажать брокера, солярка, трак-стоп).\n3. ТОПЛИВО И ЗАПРАВКИ (ЖЕЛЕЗНОЕ ПРАВИЛО ГЕО-МОДУЛЯ):\n   - Если водитель спрашивает про топливо, заправки, паркинг или маршрут, и НЕ СКАЗАЛ СВОЙ СЕТАП:\n     НИКОГДА НЕ УГАДЫВАЙ! Сразу спроси в лоб:\n     «Братуха, на чем идешь? Стингер 9-кар, хай-маунт или пикап с виджиком?»\n   - Если Стингер 9-кар / Хай-маунт 7-кар (Class 8):\n     Строго коммерческие трак-стопы (Loves, Pilot/Flying J, TA/Petro). На легковые заправки не лезть — радиус разворота 75-80ft, высота 14ft, снесешь козырек или провода. На трак-стопе использовать сателлитную колонку (Truck Lane), чтобы залить оба бака разом.\n   - Если Пикап (RAM 3500 / Ford F-350) + Виджик 3-4 авто:\n     Можно заливать солярку на внешних RV-колонках Buc-ee's, Circle K, Murphy USA, экономя 30-50 центов на каждом галлоне. Обязательно помнить про занос хвоста (tail swing прицепа) и клиренс верхнего яруса (10-12ft). Всегда выбирать крайнюю колонку с прямым выездом.\n   - IFTA-стратегия: Налог IFTA начисляется по милям в штате, а не по чеку с заправки! Заливайся в дешевых по налогу штатах (Миссури MO 27¢, Техас TX 20¢, Южная Каролина SC 28¢), избегай заправок под пробку в дорогих (Пенсильвания PA 78¢, Иллинойс IL 54¢, Индиана IN 57¢, Калифорния CA 94¢).\n4. ПРОВЕРКА БРОКЕРА (FMCSA SAFER & ДАБЛ-БРОКЕРИНГ):\n   - Проверяй статус Operating Authority и наличие активного бонда BMC-84 ($75,000). Если бонд в статусе Cancellation — груз брать ЗАПРЕЩЕНО.\n   - Красные флаги кидал: MC моложе 6 месяцев (номер >1650000), почта диспетчера на @gmail.com/@yahoo.com, телефон VOIP, недавняя смена адреса. Требуй прямое подтверждение от шиппера или QuickPay при погрузке.\n\nСТРУКТУРА ОТВЕТА:\n1. Вердикт (в двух словах: кто прав, сколько бабок требуем, или какую заправку брать).\n2. Что делать прямо сейчас (2-4 четких буллета без воды).\n3. Если есть спор с брокером: блок `Quote to broker:` на грамотном американском английском, чтобы оунер просто скопировал и отправил брокеру.\n\nБАЗА ЗНАНИЙ: При вопросах по законам, штрафам и суммам обязательно заглядывай в свой инструмент 'car_hauling_knowledge_base'."
+        },
+        "promptType": "define"
+      },
+      "typeVersion": 1.7
+    },
+    {
+      "id": "d1c2b3a4-3333-4444-8888-000000000003",
+      "name": "Google Gemini Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "position": [
+        160,
+        240
+      ],
+      "parameters": {
+        "options": {},
+        "modelName": "models/gemini-3.5-flash"
+      },
+      "credentials": {
+        "googlePalmApi": {
+          "id": "fZIB1TRcDLbbK8Uy",
+          "name": "Google Gemini API"
+        }
+      },
+      "typeVersion": 1
+    },
+    {
+      "id": "d1c2b3a4-4444-4444-8888-000000000004",
+      "name": "Window Buffer Memory",
+      "type": "@n8n/n8n-nodes-langchain.memoryBufferWindow",
+      "position": [
+        300,
+        240
+      ],
+      "parameters": {
+        "contextWindowLength": 10
+      },
+      "typeVersion": 1.3
+    },
+    {
+      "id": "d1c2b3a4-5555-4444-8888-000000000005",
+      "name": "Qdrant Knowledge Base Tool",
+      "type": "@n8n/n8n-nodes-langchain.vectorStoreQdrant",
+      "position": [
+        460,
+        240
+      ],
+      "parameters": {
+        "mode": "retrieve-as-tool",
+        "options": {},
+        "toolName": "car_hauling_knowledge_base",
+        "toolDescription": "Authoritative search tool for US car hauling regulations, Carmack Amendment case law, Federal Bridge Formula B calculations, AIAG M-22 damage codes in Super Dispatch, Copart/IAAI/Manheim auction protocols, dry run & detention fees, and EV towing safety.",
+        "qdrantCollection": {
+          "__rl": true,
+          "mode": "id",
+          "value": "car_hauling_kb"
+        }
+      },
+      "credentials": {
+        "qdrantApi": {
+          "id": "prXIeAf7AoFQ2WKz",
+          "name": "Qdrant API"
+        }
+      },
+      "typeVersion": 1.3
+    },
+    {
+      "id": "d1c2b3a4-6666-4444-8888-000000000006",
+      "name": "Embeddings Google Gemini",
+      "type": "@n8n/n8n-nodes-langchain.embeddingsGoogleGemini",
+      "position": [
+        460,
+        440
+      ],
+      "parameters": {
+        "modelName": "models/gemini-embedding-2"
+      },
+      "credentials": {
+        "googlePalmApi": {
+          "id": "fZIB1TRcDLbbK8Uy",
+          "name": "Google Gemini API"
+        }
+      },
+      "typeVersion": 1
+    }
+  ],
+  "connections": {
+    "When chat message received": {
+      "main": [
+        [
+          {
+            "node": "AI Dispatcher Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Gemini Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Dispatcher Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Window Buffer Memory": {
+      "ai_memory": [
+        [
+          {
+            "node": "AI Dispatcher Agent",
+            "type": "ai_memory",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Qdrant Knowledge Base Tool": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Dispatcher Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Embeddings Google Gemini": {
+      "ai_embedding": [
+        [
+          {
+            "node": "Qdrant Knowledge Base Tool",
+            "type": "ai_embedding",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}

@@ -1,0 +1,15 @@
+{
+    email admin@194.127.179.231.sslip.io
+}
+
+# n8n панель и вебхуки
+{$SUBDOMAIN_N8N} {
+    reverse_proxy n8n:5678 {
+        flush_interval -1
+    }
+}
+
+# Grafana мониторинг
+{$SUBDOMAIN_GRAFANA} {
+    reverse_proxy grafana:3000
+}

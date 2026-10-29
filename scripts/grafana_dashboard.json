@@ -1,0 +1,428 @@
+{
+  "meta": {
+    "type": "db",
+    "canSave": true,
+    "canEdit": true,
+    "canAdmin": true,
+    "canStar": true,
+    "canDelete": true,
+    "slug": "dispatch-hub3a-driver-cases-and-operations",
+    "url": "/d/dispatch-hub-analytics/dispatch-hub3a-driver-cases-and-operations",
+    "expires": "0001-01-01T00:00:00Z",
+    "created": "2026-10-29T15:13:14Z",
+    "updated": "2026-10-29T15:13:14Z",
+    "updatedBy": "admin",
+    "createdBy": "admin",
+    "version": 1,
+    "hasAcl": false,
+    "isFolder": false,
+    "folderId": 0,
+    "folderUid": "",
+    "folderTitle": "General",
+    "folderUrl": "",
+    "provisioned": false,
+    "provisionedExternalId": "",
+    "annotationsPermissions": {
+      "dashboard": {
+        "canAdd": true,
+        "canEdit": true,
+        "canDelete": true
+      },
+      "organization": {
+        "canAdd": true,
+        "canEdit": true,
+        "canDelete": true
+      }
+    }
+  },
+  "dashboard": {
+    "id": 1,
+    "panels": [
+      {
+        "datasource": {
+          "type": "grafana-postgresql-datasource",
+          "uid": "dg2p90s21bz7kd"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "color": {
+              "fixedColor": "green",
+              "mode": "fixed"
+            },
+            "decimals": 0,
+            "unit": "currencyUSD"
+          }
+        },
+        "gridPos": {
+          "h": 4,
+          "w": 6,
+          "x": 0,
+          "y": 0
+        },
+        "id": 1,
+        "options": {
+          "colorMode": "value",
+          "graphMode": "none",
+          "justifyMode": "auto",
+          "reduceOptions": {
+            "calcs": [
+              "lastNotNull"
+            ],
+            "values": false
+          }
+        },
+        "targets": [
+          {
+            "datasource": {
+              "type": "grafana-postgresql-datasource",
+              "uid": "dg2p90s21bz7kd"
+            },
+            "format": "table",
+            "rawSql": "SELECT COALESCE(SUM(recovered_amount), 0) as total_recovered FROM driver_cases;",
+            "refId": "A"
+          }
+        ],
+        "title": "Total Money Recovered for Drivers",
+        "type": "stat"
+      },
+      {
+        "datasource": {
+          "type": "grafana-postgresql-datasource",
+          "uid": "dg2p90s21bz7kd"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "color": {
+              "fixedColor": "blue",
+              "mode": "fixed"
+            },
+            "unit": "locale"
+          }
+        },
+        "gridPos": {
+          "h": 4,
+          "w": 6,
+          "x": 6,
+          "y": 0
+        },
+        "id": 2,
+        "options": {
+          "colorMode": "value",
+          "graphMode": "none",
+          "reduceOptions": {
+            "calcs": [
+              "lastNotNull"
+            ],
+            "values": false
+          }
+        },
+        "targets": [
+          {
+            "datasource": {
+              "type": "grafana-postgresql-datasource",
+              "uid": "dg2p90s21bz7kd"
+            },
+            "format": "table",
+            "rawSql": "SELECT COUNT(*) as total_cases FROM driver_cases;",
+            "refId": "A"
+          }
+        ],
+        "title": "Total Driver Cases Handled",
+        "type": "stat"
+      },
+      {
+        "datasource": {
+          "type": "grafana-postgresql-datasource",
+          "uid": "dg2p90s21bz7kd"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "color": {
+              "mode": "thresholds"
+            },
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {
+                  "color": "red",
+                  "value": null
+                },
+                {
+                  "color": "orange",
+                  "value": 70
+                },
+                {
+                  "color": "green",
+                  "value": 90
+                }
+              ]
+            },
+            "unit": "percent"
+          }
+        },
+        "gridPos": {
+          "h": 4,
+          "w": 6,
+          "x": 12,
+          "y": 0
+        },
+        "id": 3,
+        "options": {
+          "colorMode": "value",
+          "reduceOptions": {
+            "calcs": [
+              "lastNotNull"
+            ],
+            "values": false
+          }
+        },
+        "targets": [
+          {
+            "datasource": {
+              "type": "grafana-postgresql-datasource",
+              "uid": "dg2p90s21bz7kd"
+            },
+            "format": "table",
+            "rawSql": "SELECT ROUND((COUNT(*) FILTER (WHERE recovered_amount > 0)::numeric / GREATEST(COUNT(*), 1) * 100), 1) as win_rate FROM driver_cases;",
+            "refId": "A"
+          }
+        ],
+        "title": "Claim Recovery Rate (Driver Win %)",
+        "type": "stat"
+      },
+      {
+        "datasource": {
+          "type": "grafana-postgresql-datasource",
+          "uid": "dg2p90s21bz7kd"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "color": {
+              "fixedColor": "yellow",
+              "mode": "fixed"
+            },
+            "unit": "m"
+          }
+        },
+        "gridPos": {
+          "h": 4,
+          "w": 6,
+          "x": 18,
+          "y": 0
+        },
+        "id": 4,
+        "options": {
+          "colorMode": "value",
+          "reduceOptions": {
+            "calcs": [
+              "lastNotNull"
+            ],
+            "values": false
+          }
+        },
+        "targets": [
+          {
+            "datasource": {
+              "type": "grafana-postgresql-datasource",
+              "uid": "dg2p90s21bz7kd"
+            },
+            "format": "table",
+            "rawSql": "SELECT COALESCE(ROUND(AVG(time_to_resolve_minutes)), 0) as avg_min FROM driver_cases;",
+            "refId": "A"
+          }
+        ],
+        "title": "Avg Resolution Speed",
+        "type": "stat"
+      },
+      {
+        "datasource": {
+          "type": "grafana-postgresql-datasource",
+          "uid": "dg2p90s21bz7kd"
+        },
+        "gridPos": {
+          "h": 8,
+          "w": 8,
+          "x": 0,
+          "y": 4
+        },
+        "id": 5,
+        "options": {
+          "displayLabels": [
+            "percent"
+          ],
+          "legend": {
+            "displayMode": "table",
+            "placement": "right",
+            "values": [
+              "value",
+              "percent"
+            ]
+          }
+        },
+        "targets": [
+          {
+            "datasource": {
+              "type": "grafana-postgresql-datasource",
+              "uid": "dg2p90s21bz7kd"
+            },
+            "format": "table",
+            "rawSql": "SELECT category, COUNT(*) as cases_count FROM driver_cases GROUP BY category ORDER BY cases_count DESC;",
+            "refId": "A"
+          }
+        ],
+        "title": "Dispute Breakdown by Category",
+        "type": "piechart"
+      },
+      {
+        "datasource": {
+          "type": "grafana-postgresql-datasource",
+          "uid": "dg2p90s21bz7kd"
+        },
+        "gridPos": {
+          "h": 8,
+          "w": 8,
+          "x": 8,
+          "y": 4
+        },
+        "id": 6,
+        "options": {
+          "displayLabels": [
+            "percent"
+          ],
+          "legend": {
+            "displayMode": "table",
+            "placement": "right",
+            "values": [
+              "value",
+              "percent"
+            ]
+          }
+        },
+        "targets": [
+          {
+            "datasource": {
+              "type": "grafana-postgresql-datasource",
+              "uid": "dg2p90s21bz7kd"
+            },
+            "format": "table",
+            "rawSql": "SELECT driver_setup, COUNT(*) as cases_count FROM driver_cases GROUP BY driver_setup ORDER BY cases_count DESC;",
+            "refId": "A"
+          }
+        ],
+        "title": "Volume by Equipment Setup (Stinger vs High-Mount vs Wedge)",
+        "type": "piechart"
+      },
+      {
+        "datasource": {
+          "type": "grafana-postgresql-datasource",
+          "uid": "dg2p90s21bz7kd"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "currencyUSD"
+          }
+        },
+        "gridPos": {
+          "h": 8,
+          "w": 8,
+          "x": 16,
+          "y": 4
+        },
+        "id": 7,
+        "targets": [
+          {
+            "datasource": {
+              "type": "grafana-postgresql-datasource",
+              "uid": "dg2p90s21bz7kd"
+            },
+            "format": "table",
+            "rawSql": "SELECT facility, SUM(recovered_amount) as recovered_dollars FROM driver_cases GROUP BY facility ORDER BY recovered_dollars DESC;",
+            "refId": "A"
+          }
+        ],
+        "title": "Recovered $ by Facility Type (Copart, IAAI, Manheim...)",
+        "type": "barchart"
+      },
+      {
+        "datasource": {
+          "type": "grafana-postgresql-datasource",
+          "uid": "dg2p90s21bz7kd"
+        },
+        "fieldConfig": {
+          "overrides": [
+            {
+              "matcher": {
+                "id": "byName",
+                "options": "recovered_amount"
+              },
+              "properties": [
+                {
+                  "id": "unit",
+                  "value": "currencyUSD"
+                }
+              ]
+            }
+          ]
+        },
+        "gridPos": {
+          "h": 9,
+          "w": 16,
+          "x": 0,
+          "y": 12
+        },
+        "id": 8,
+        "targets": [
+          {
+            "datasource": {
+              "type": "grafana-postgresql-datasource",
+              "uid": "dg2p90s21bz7kd"
+            },
+            "format": "table",
+            "rawSql": "SELECT created_at::date as date, driver_id, driver_setup, category, facility, state, broker_name, recovered_amount, resolution_strategy FROM driver_cases ORDER BY created_at DESC LIMIT 20;",
+            "refId": "A"
+          }
+        ],
+        "title": "Live Driver Case Log (GDPR-Anonymized)",
+        "type": "table"
+      },
+      {
+        "datasource": {
+          "type": "prometheus",
+          "uid": "bg2p90s8mkc1sd"
+        },
+        "gridPos": {
+          "h": 9,
+          "w": 8,
+          "x": 16,
+          "y": 12
+        },
+        "id": 9,
+        "targets": [
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "bg2p90s8mkc1sd"
+            },
+            "expr": "sum(rate(container_cpu_usage_seconds_total{name=~\"dispatch_.*\"}[1m])) by (name)",
+            "legendFormat": "{{name}}",
+            "refId": "A"
+          }
+        ],
+        "title": "Dispatch Stack Container CPU Usage (Prometheus)",
+        "type": "timeseries"
+      }
+    ],
+    "refresh": "10s",
+    "schemaVersion": 39,
+    "tags": [
+      "car-hauling",
+      "dispatch",
+      "postgres",
+      "prometheus"
+    ],
+    "timezone": "browser",
+    "title": "Dispatch Hub: Driver Cases & Operations",
+    "uid": "dispatch-hub-analytics",
+    "version": 1
+  }
+}

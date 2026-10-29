@@ -1,0 +1,28 @@
+# Environment variables & secrets
+.env
+*.pem
+*.key
+*.cert
+
+# Application Data & Docker volumes
+data/
+telethon_bot/sessions/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Node.js
+node_modules/
+npm-debug.log*
+
+# Operating System files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE & Editor artifacts
+.vscode/
+.idea/
+*.swp
+*.swo

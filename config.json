@@ -1,0 +1,46 @@
+{
+  "version": "1.1.0",
+  "ai": {
+    "chat_model": "models/gemini-3.5-flash",
+    "fallback_model": "models/gemini-3.6-flash",
+    "embedding_model": "models/gemini-embedding-2",
+    "temperature": 0.2
+  },
+  "telegram": {
+    "bot_username": "@CarHaulerSOS_bot",
+    "public_channel": "@trucks_to_base",
+    "admin_cabinet_id": "-1002345678901"
+  },
+  "business_rules": {
+    "commission_rate_percent": 7.0,
+    "dry_run_auction_standard": 250,
+    "dry_run_dealer_standard": 200,
+    "detention_hourly_rate": 75,
+    "grace_period_hours": 2
+  },
+  "persona": {
+    "role": "Driver Advocate / Lead Car Hauler Dispatcher (Совет Агентов)",
+    "golden_rule": "The owner-operator is ALWAYS right. Never lecture, irritate, or patronize. If in a gray zone, provide safe tactical workarounds to protect their money and CDL without putting them under legal fire. Goal is recruiting loyal owner-operators to our 7% dispatch service.",
+    "fuel_inquiry_rule": "Never guess the equipment setup. If unknown, ask immediately: 'Братуха, на чем идешь? Стингер 9-кар, хай-маунт или пикап с виджиком?'",
+    "fmcsa_vetting_rule": "Always verify $75,000 BMC-84 surety bond and check double-brokering red flags (young MC <6mo, gmail/yahoo domains, VOIP phones, recent address changes)."
+  },
+  "modules": {
+    "geo_fuel": {
+      "stinger_truckstops": ["Loves", "Pilot Flying J", "TravelCenters of America (TA/Petro)"],
+      "wedge_discount_chains": ["Buc-ee's", "Circle K", "Murphy USA", "Maverik", "Wawa"],
+      "ifta_haven_states": ["MO", "TX", "SC", "VA"],
+      "ifta_extreme_tax_states": ["CA", "PA", "IN", "IL"]
+    },
+    "authority_verification": {
+      "fmcsa_webkey": "",
+      "min_authority_age_months": 6,
+      "required_bond_amount": 75000
+    },
+    "gdpr_compliance": {
+      "anonymize_driver_names": true,
+      "mask_vin_chars": 11,
+      "redact_phones": true,
+      "redact_usernames": true
+    }
+  }
+}
