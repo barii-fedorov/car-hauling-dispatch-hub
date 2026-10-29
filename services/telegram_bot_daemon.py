@@ -14,6 +14,9 @@ import urllib.request
 import urllib.parse
 import urllib.error
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from telegram_formatter import markdown_to_telegram_html, strip_html_tags
+
 # Config & Credentials loaded securely from Environment Variables
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
@@ -71,10 +74,11 @@ def send_chat_action(chat_id, action="typing"):
         pass
 
 def send_telegram_message(chat_id, text, reply_to_message_id=None, message_thread_id=None, reply_markup=None):
+    html_text = markdown_to_telegram_html(text)
     payload = {
         "chat_id": chat_id,
-        "text": text,
-        "parse_mode": "Markdown"
+        "text": html_text,
+        "parse_mode": "HTML"
     }
     if reply_to_message_id:
         payload["reply_to_message_id"] = reply_to_message_id
@@ -92,8 +96,10 @@ def send_telegram_message(chat_id, text, reply_to_message_id=None, message_threa
         )
         with urllib.request.urlopen(req, timeout=10) as resp:
             return json.loads(resp.read().decode())
-    except urllib.error.HTTPError:
+    except urllib.error.HTTPError as he:
         try:
+            print(f"[WARN] HTML sendMessage failed ({he}), retrying with stripped plain text...")
+            payload["text"] = strip_html_tags(html_text)
             payload.pop("parse_mode", None)
             req = urllib.request.Request(
                 url,
@@ -382,13 +388,16 @@ def process_callback_query(cb):
                 channel_msg_id = None
                 if image_url and post_type != "alert":
                     photo_url = f"{API_URL}/sendPhoto"
-                    p_load = {"chat_id": CHANNEL_ID, "photo": image_url, "caption": content[:1020], "parse_mode": "Markdown"}
+                    html_caption = markdown_to_telegram_html(content, max_length=1020)
+                    p_load = {"chat_id": CHANNEL_ID, "photo": image_url, "caption": html_caption, "parse_mode": "HTML"}
                     try:
                         req = urllib.request.Request(photo_url, data=json.dumps(p_load).encode(), headers={"Content-Type": "application/json"})
                         with urllib.request.urlopen(req, timeout=15) as resp:
                             res = json.loads(resp.read().decode())
                             channel_msg_id = res["result"]["message_id"]
-                    except Exception:
+                    except Exception as ex:
+                        print(f"[WARN] sendPhoto HTML failed ({ex}), falling back to stripped text")
+                        p_load["caption"] = strip_html_tags(html_caption)
                         p_load.pop("parse_mode", None)
                         req = urllib.request.Request(photo_url, data=json.dumps(p_load).encode(), headers={"Content-Type": "application/json"})
                         with urllib.request.urlopen(req, timeout=15) as resp:
@@ -396,13 +405,16 @@ def process_callback_query(cb):
                             channel_msg_id = res["result"]["message_id"]
                 else:
                     m_url = f"{API_URL}/sendMessage"
-                    p_load = {"chat_id": CHANNEL_ID, "text": content, "parse_mode": "Markdown"}
+                    html_text = markdown_to_telegram_html(content)
+                    p_load = {"chat_id": CHANNEL_ID, "text": html_text, "parse_mode": "HTML"}
                     try:
                         req = urllib.request.Request(m_url, data=json.dumps(p_load).encode(), headers={"Content-Type": "application/json"})
                         with urllib.request.urlopen(req, timeout=15) as resp:
                             res = json.loads(resp.read().decode())
                             channel_msg_id = res["result"]["message_id"]
-                    except Exception:
+                    except Exception as ex:
+                        print(f"[WARN] sendMessage HTML failed ({ex}), falling back to stripped text")
+                        p_load["text"] = strip_html_tags(html_text)
                         p_load.pop("parse_mode", None)
                         req = urllib.request.Request(m_url, data=json.dumps(p_load).encode(), headers={"Content-Type": "application/json"})
                         with urllib.request.urlopen(req, timeout=15) as resp:

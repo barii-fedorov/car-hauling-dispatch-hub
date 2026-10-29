@@ -18,6 +18,9 @@ import urllib.error
 import xml.etree.ElementTree as ET
 from datetime import datetime
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from telegram_formatter import markdown_to_telegram_html, strip_html_tags
+
 # Environment Variables
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
@@ -253,9 +256,9 @@ def send_draft_for_approval(post_id, post_type, title, text, image_url=None, thr
         ]
     }
 
-    header = "📋 **[ЧЕРНОВИК НА АПРУВ]**\n\n"
-    full_text = header + text
-    caption_text = full_text[:1020]
+    header = "📋 <b>[ЧЕРНОВИК НА АПРУВ]</b>\n\n"
+    formatted_body = markdown_to_telegram_html(text, max_length=950)
+    html_caption = header + formatted_body
     cabinet_msg_id = None
 
     if image_url and post_type != "alert":
@@ -264,8 +267,8 @@ def send_draft_for_approval(post_id, post_type, title, text, image_url=None, thr
             "chat_id": ADMIN_CHAT_ID,
             "message_thread_id": thread_id,
             "photo": image_url,
-            "caption": caption_text,
-            "parse_mode": "Markdown",
+            "caption": html_caption,
+            "parse_mode": "HTML",
             "reply_markup": reply_markup
         }
         try:
@@ -273,8 +276,10 @@ def send_draft_for_approval(post_id, post_type, title, text, image_url=None, thr
             with urllib.request.urlopen(req, timeout=15) as resp:
                 res_data = json.loads(resp.read().decode())
                 cabinet_msg_id = res_data["result"]["message_id"]
-                print(f"[OK] Draft with photo sent to Cabinet Topic {thread_id}: {title}")
-        except Exception:
+                print(f"[OK] Draft with photo sent to Cabinet Topic {thread_id} (HTML mode): {title}")
+        except Exception as e:
+            print(f"[WARN] sendPhoto with HTML failed ({e}), retrying stripped plain text...")
+            payload["caption"] = strip_html_tags(html_caption)
             payload.pop("parse_mode", None)
             try:
                 req = urllib.request.Request(photo_url, data=json.dumps(payload).encode("utf-8"), headers={"Content-Type": "application/json"})
@@ -282,17 +287,18 @@ def send_draft_for_approval(post_id, post_type, title, text, image_url=None, thr
                     res_data = json.loads(resp.read().decode())
                     cabinet_msg_id = res_data["result"]["message_id"]
                     print(f"[OK] Draft with photo sent to Cabinet Topic {thread_id} (plain text fallback)")
-            except Exception as e:
-                print(f"[WARN] sendPhoto to Cabinet failed: {e}")
+            except Exception as ex:
+                print(f"[WARN] sendPhoto to Cabinet failed: {ex}")
 
     # Text-only (for road alerts or if photo failed)
     if not cabinet_msg_id:
         msg_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        formatted_text = header + markdown_to_telegram_html(text)
         payload = {
             "chat_id": ADMIN_CHAT_ID,
             "message_thread_id": thread_id,
-            "text": full_text,
-            "parse_mode": "Markdown",
+            "text": formatted_text,
+            "parse_mode": "HTML",
             "reply_markup": reply_markup
         }
         try:
@@ -300,8 +306,10 @@ def send_draft_for_approval(post_id, post_type, title, text, image_url=None, thr
             with urllib.request.urlopen(req, timeout=15) as resp:
                 res_data = json.loads(resp.read().decode())
                 cabinet_msg_id = res_data["result"]["message_id"]
-                print(f"[OK] Text draft sent to Cabinet Topic {thread_id}: {title}")
-        except Exception:
+                print(f"[OK] Text draft sent to Cabinet Topic {thread_id} (HTML mode): {title}")
+        except Exception as e:
+            print(f"[WARN] sendMessage with HTML failed ({e}), retrying stripped plain text...")
+            payload["text"] = strip_html_tags(formatted_text)
             payload.pop("parse_mode", None)
             try:
                 req = urllib.request.Request(msg_url, data=json.dumps(payload).encode("utf-8"), headers={"Content-Type": "application/json"})
@@ -309,8 +317,8 @@ def send_draft_for_approval(post_id, post_type, title, text, image_url=None, thr
                     res_data = json.loads(resp.read().decode())
                     cabinet_msg_id = res_data["result"]["message_id"]
                     print(f"[OK] Text draft sent to Cabinet Topic {thread_id} (plain text fallback)")
-            except Exception as e:
-                print(f"[ERROR] Failed to send draft to Cabinet: {e}")
+            except Exception as ex:
+                print(f"[ERROR] Failed to send draft to Cabinet: {ex}")
                 return False
 
     # 2. Register in PostgreSQL
