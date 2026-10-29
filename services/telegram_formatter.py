@@ -39,36 +39,38 @@ def markdown_to_telegram_html(text: str, max_length: int = None) -> str:
     # 2. Convert markdown headers: ### Header or ## Header -> **Header**
     text = re.sub(r'^(?:#{1,6})\s*(.+)$', r'**\1**', text, flags=re.MULTILINE)
 
-    # 3. Convert markdown list bullets: '*   ' or '-   ' -> '• '
+    # 3. Horizontal rules: *** or --- or ___ on a line by itself -> empty line
+    text = re.sub(r'^\s*[\*\-_]{3,}\s*$', '', text, flags=re.MULTILINE)
+
+    # 4. Convert markdown list bullets: '*   ' or '-   ' -> '• '
     text = re.sub(r'^\s*[\*\-]\s+', r'• ', text, flags=re.MULTILINE)
 
-    # 4. Escape &, <, > so plain text never triggers HTML parse errors
+    # 5. Escape &, <, > so plain text never triggers HTML parse errors
     text = html.escape(text, quote=False)
 
-    # 5. Code blocks ```lang\ncode``` -> <pre><code>code</code></pre>
+    # 6. Code blocks ```lang\ncode``` -> <pre><code>code</code></pre>
     text = re.sub(r'```([a-zA-Z0-9_\-]*)\n?(.*?)```', r'<pre><code>\2</code></pre>', text, flags=re.DOTALL)
 
-    # 6. Inline code `code` -> <code>code</code>
+    # 7. Inline code `code` -> <code>code</code>
     text = re.sub(r'`([^`\n]+)`', r'<code>\1</code>', text)
 
-    # 7. Bold and Italic combinations (e.g. ***text*** or ***text**)
-    text = re.sub(r'\*\*\*(.+?)\*\*\*', r'<b><i>\1</i></b>', text, flags=re.DOTALL)
-    text = re.sub(r'\*\*\*(.+?)\*\*', r'<b><i>\1</i></b>', text, flags=re.DOTALL)
+    # 8. Bold and Italic: ***text*** -> <b><i>text</i></b>
+    text = re.sub(r'\*\*\*([^\*\n]+?)\*\*\*', r'<b><i>\1</i></b>', text)
 
-    # 8. Bold: **text** or __text__ -> <b>text</b>
-    text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text, flags=re.DOTALL)
-    text = re.sub(r'__(.+?)__', r'<b>\1</b>', text, flags=re.DOTALL)
+    # 9. Bold: **text** or __text__ -> <b>text</b>
+    text = re.sub(r'\*\*([^\*\n]+?)\*\*', r'<b>\1</b>', text)
+    text = re.sub(r'__([^_\n]+?)__', r'<b>\1</b>', text)
 
-    # 9. Italic: *text* (where * is not part of bold or bullet lists)
+    # 10. Italic: *text* (where * is not part of bold or bullet lists)
     text = re.sub(r'(?<![\*\w])\*([^\*\n]+?)\*(?![\*\w])', r'<i>\1</i>', text)
 
-    # 10. Links: [text](url) -> <a href="url">text</a>
+    # 11. Links: [text](url) -> <a href="url">text</a>
     text = re.sub(r'\[([^\]\n]+)\]\((https?://[^\)\s]+)\)', r'<a href="\2">\1</a>', text)
 
-    # 11. Tag balancing
+    # 12. Tag balancing
     text = balance_html_tags(text)
 
-    # 12. Hard safety limit
+    # 13. Hard safety limit
     if max_length and len(text) > max_length:
         text = text[:max_length - 8]
         text = balance_html_tags(text)
