@@ -21,20 +21,20 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
 # Available Gemini Model Hierarchy
 MODELS = {
-    "gemini-3-flash-preview": {
-        "url": f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key={GEMINI_API_KEY}",
+    "gemini-3.5-flash": {
+        "url": f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key={GEMINI_API_KEY}",
         "max_rpm": 15,
         "role": "High reasoning / broker intelligence / multi-stop logistics"
     },
-    "gemini-2.5-flash": {
-        "url": f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}",
+    "gemini-3.1-flash-lite-preview": {
+        "url": f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite-preview:generateContent?key={GEMINI_API_KEY}",
         "max_rpm": 30,
         "role": "Fast tactical dispatch / fuel geocoding / claim customization"
     },
-    "gemini-1.5-flash": {
-        "url": f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}",
-        "max_rpm": 30,
-        "role": "High-throughput fallback"
+    "gemini-3-flash-preview": {
+        "url": f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key={GEMINI_API_KEY}",
+        "max_rpm": 15,
+        "role": "Preview reasoning (monitored for 429)"
     }
 }
 
@@ -208,9 +208,9 @@ def select_model_for_request(difficulty: int) -> str:
 
     # Hierarchy preference by difficulty
     if difficulty >= 2:
-        preferences = ["gemini-3-flash-preview", "gemini-2.5-flash", "gemini-1.5-flash"]
+        preferences = ["gemini-3.5-flash", "gemini-3.1-flash-lite-preview", "gemini-3-flash-preview"]
     else:
-        preferences = ["gemini-2.5-flash", "gemini-3-flash-preview", "gemini-1.5-flash"]
+        preferences = ["gemini-3.1-flash-lite-preview", "gemini-3.5-flash", "gemini-3-flash-preview"]
 
     for m in preferences:
         if metrics_tracker.is_model_available(m):
@@ -236,7 +236,7 @@ def query_model_with_failover(prompt: str, system_prompt: str = None, context_ty
 
     chosen_model = select_model_for_request(difficulty)
     candidate_models = [chosen_model]
-    for m in ["gemini-2.5-flash", "gemini-3-flash-preview", "gemini-1.5-flash"]:
+    for m in ["gemini-3.5-flash", "gemini-3.1-flash-lite-preview", "gemini-3-flash-preview"]:
         if m not in candidate_models:
             candidate_models.append(m)
 
