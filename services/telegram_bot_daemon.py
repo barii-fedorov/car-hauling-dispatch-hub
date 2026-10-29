@@ -59,33 +59,16 @@ if not GEMINI_KEY:
 
 API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}" if BOT_TOKEN else ""
 
-# System Prompt for Council of Agents
-SYSTEM_PROMPT = """Ты — Совет Агентов американского автовозного диспатча («Грузовики на базу»).
-Твоя задача — железно защищать оунер-оператора, говорить с ним на ЕГО языке (автовозный сленг) и показывать, что наша диспетчерская (7% фикс) — единственные, кто реально прикрывает его спину на дороге.
+# System Prompt for Professional Car Hauling Dispatcher
+SYSTEM_PROMPT = """Ты — опытный ночной американский диспетчер автовозного флота (car hauling dispatch).
+Твоя задача — помогать водителям на дороге: споры с брокерами, детеншен ($75/ч), TONU ($250), правила по свесам (FAST Act 23 CFR § 658.13), развесовка по осям, дизель и проверенный выездной ремонт.
 
-СОСТАВ СОВЕТА:
-1. Агент-Юрист: Знает, как отжать у брокера каждый цент за простой (Detention $75/час после 2ч), срыв погрузки (Dry Run / TONU $200-$250), как зажать его через бонд BMC-84 ($75k) и оспорить претензии по Carmack Amendment.
-2. Агент-Техник: Знает железо — Bridge Formula B, развесовку по осям (Steer 12k-14k, Drive 34k, Trailer 34k), высоты (Восток 13'6", Запад 14'0"), углы рамп и погрузку ин-опов (Inop) с лебедой.
-3. Главный Диспетчер: Говорит от лица совета. Никакой нудятины, лекций и соплей. Стиль — четкий, уверенный, уважительный к оунеру.
-
-ЗОЛОТЫЕ ПРАВИЛА:
-1. ВОДИЛА ВСЕГДА ПРАВ: Если ситуация серая — ты ВСЕГДА за водилу. Подскажи, как грамотно отмазаться от брокера, не попасть на тикет DOT и забрать оплату.
-2. СЛЕНГ: Используй профессиональный жаргон (оунер, стингер, хай-маунт, виджик, дека, рэк, оверхэнг, ин-оп, лебеда, сфоткать гейт-слип, клокин-фрейм, чарджить детеншен, драй-ран, бонд BMC-84, супердиспатч, зажать брокера, солярка, трак-стоп).
-3. ТОПЛИВО И ЗАПРАВКИ:
-   - Если водитель спрашивает про топливо, заправки или маршрут, и НЕ СКАЗАЛ СВОЙ СЕТАП:
-     НИКОГДА НЕ УГАДЫВАЙ! Сразу спроси в лоб:
-     «Братуха, на чем идешь? Стингер 9-кар, хай-маунт или пикап с виджиком?»
-   - Если Стингер 9-кар / Хай-маунт 7-кар (Class 8): строго трак-стопы (Loves, Pilot/Flying J, TA/Petro). На легковые заправки не лезть — снесешь козырек или провода.
-   - Если Пикап + Виджик 3-4 авто: можно заливать солярку на внешних RV-колонках Buc-ee's, Circle K, Murphy USA, экономя 30-50 центов на каждом галлоне.
-   - IFTA: напоминай, что налог IFTA платится по милям в штате, поэтому заливайся в дешевых штатах (MO 27¢, TX 20¢, SC 28¢), избегай заправок под завязку в дорогих (PA 78¢, IL 54¢, IN 57¢, CA 94¢).
-4. ПРОВЕРКА БРОКЕРА (FMCSA SAFER):
-   - Проверяй статус Operating Authority и $75k бонд BMC-84.
-   - Красные флаги: MC моложе 6 месяцев (>1650000), почта на @gmail.com/@yahoo.com, телефон VOIP.
-
-СТРУКТУРА ОТВЕТА:
-1. Вердикт (в двух словах: кто прав, сколько денег требуем, или какую заправку брать).
-2. Что делать прямо сейчас (2-4 четких буллета без воды).
-3. Если есть спор с брокером: блок `Quote to broker:` на грамотном американском английском, чтобы оунер просто скопировал и отправил брокеру."""
+ПРАВИЛА:
+1. Тон: Спокойный, деловой, профессиональный. Никакого пафоса, театральности и выдуманных "советов агентов". Не строй из себя героя аниме.
+2. Длина ответа: 2-4 предложения. Кратко, четко, только факты и цифры.
+3. Если водитель спорит с брокером: дай готовый блок `Quote to broker:` на грамотном американском английском языке, чтобы водитель скопировал и отправил в один клик.
+4. Помни контекст диалога: обращай внимание на предыдущие сообщения водителя. Если ошибся ранее — спокойно признай в одном предложении и дай правильное решение.
+"""
 
 def send_chat_action(chat_id, action="typing"):
     try:
@@ -172,7 +155,7 @@ def edit_telegram_message(chat_id, message_id, text, reply_markup=None):
     return None
 
 def ask_gemini_direct(prompt):
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key={GEMINI_KEY}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_KEY}"
     payload = {
         "contents": [{"role": "user", "parts": [{"text": prompt}]}],
         "generationConfig": {"temperature": 0.2, "maxOutputTokens": 800}
@@ -190,6 +173,19 @@ def ask_gemini_direct(prompt):
         print(f"[ERROR] Gemini direct call failed: {e}")
     return None
 
+# In-Memory Multi-Turn Conversation History per chat_id
+CHAT_MEMORY = {}  # {chat_id: [{"role": "user"|"model", "text": "..."}]}
+
+def record_chat_turn(chat_id, role, text):
+    if not chat_id or not text:
+        return
+    if chat_id not in CHAT_MEMORY:
+        CHAT_MEMORY[chat_id] = []
+    gemini_role = "user" if role == "user" else "model"
+    CHAT_MEMORY[chat_id].append({"role": gemini_role, "text": text})
+    if len(CHAT_MEMORY[chat_id]) > 10:
+        CHAT_MEMORY[chat_id] = CHAT_MEMORY[chat_id][-10:]
+
 def ask_gemini(user_message, chat_id=None):
     profile_context = ""
     if chat_id:
@@ -198,17 +194,47 @@ def ask_gemini(user_message, chat_id=None):
         except Exception as e:
             print(f"[WARN] Failed to get profile context: {e}")
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key={GEMINI_KEY}"
+    system_instruction_text = f"{SYSTEM_PROMPT}\n\n{profile_context}".strip()
+    
+    contents = []
+    history = CHAT_MEMORY.get(chat_id, [])
+    # Build conversation turns from history
+    for turn in history[-8:]:
+        contents.append({
+            "role": turn["role"],
+            "parts": [{"text": turn["text"]}]
+        })
+    # Ensure current user_message is the final user turn
+    if not contents or contents[-1]["role"] != "user" or contents[-1]["parts"][0]["text"] != user_message:
+        contents.append({
+            "role": "user",
+            "parts": [{"text": user_message}]
+        })
+
+    # Sanitize contents so consecutive turns have distinct roles (Gemini API requirement)
+    sanitized_contents = []
+    for c in contents:
+        if sanitized_contents and sanitized_contents[-1]["role"] == c["role"]:
+            sanitized_contents[-1]["parts"][0]["text"] += "\n" + c["parts"][0]["text"]
+        else:
+            sanitized_contents.append(c)
+
+    # First turn must be user
+    while sanitized_contents and sanitized_contents[0]["role"] != "user":
+        sanitized_contents.pop(0)
+
+    if not sanitized_contents:
+        sanitized_contents = [{"role": "user", "parts": [{"text": user_message}]}]
+
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_KEY}"
     payload = {
-        "contents": [
-            {
-                "role": "user",
-                "parts": [{"text": f"SYSTEM INSTRUCTIONS:\n{SYSTEM_PROMPT}\n\n{profile_context}USER MESSAGE:\n{user_message}"}]
-            }
-        ],
+        "system_instruction": {
+            "parts": [{"text": system_instruction_text}]
+        },
+        "contents": sanitized_contents,
         "generationConfig": {
             "temperature": 0.2,
-            "maxOutputTokens": 1000
+            "maxOutputTokens": 800
         }
     }
     req = urllib.request.Request(
@@ -223,11 +249,14 @@ def ask_gemini(user_message, chat_id=None):
             if candidates:
                 parts = candidates[0].get("content", {}).get("parts", [])
                 if parts:
-                    return parts[0].get("text", "")
-            return "Братуха, сигнал просел. Повтори вопрос, сейчас Совет подключится!"
+                    answer_text = parts[0].get("text", "")
+                    if chat_id and answer_text:
+                        record_chat_turn(chat_id, "model", answer_text)
+                    return answer_text
+            return "Связь восстановилась. Уточни вопрос, сейчас отвечу."
     except Exception as e:
         print(f"[ERROR] Gemini API error: {e}")
-        return "Братуха, временный сбой связи с базой. Повтори вопрос еще разок!"
+        return "Секунду, был сбой связи с сервером. Повтори вопрос."
 
 def process_message(msg):
     chat = msg.get("chat", {})
@@ -249,6 +278,7 @@ def process_message(msg):
         lon = location.get("longitude")
         loc_str_quick = reverse_geocode(lat, lon)
     profile = analyze_and_update_profile(chat_id, text=text, location_str=loc_str_quick)
+    record_chat_turn(chat_id, "user", text or f"📍 [Геолокация: {loc_str_quick}]")
 
     if not chat_id or (not text and not location):
         return
@@ -368,17 +398,15 @@ def process_message(msg):
     if text.startswith("/start"):
         set_driver_session(chat_id, state="idle")
         welcome_text = (
-            "🚛 <b>Здорово, оунер! На связи Совет Агентов автовозного диспатча («Грузовики на базу»).</b>\n\n"
-            "Мы прикрываем твою спину на дороге 24/7. Наш принцип — <b>водитель всегда прав</b>.\n\n"
-            "🔥 <b>Быстрые команды в меню:</b>\n"
-            "• ⛽ <code>/fuel</code> — Найти дешевый дизель по геолокации\n"
-            "• 🔧 <code>/repair</code> — Свои проверенные мастера (кэш/Zelle, без репортов в DOT)\n"
-            "• 🔍 <code>/broker MC#</code> — Проверка брокера, бонда $75k и срока оплаты\n"
-            "• ⚖️ <code>/claim</code> — Претензии на Детеншен ($75/ч) и срыв TONU ($250)\n"
-            "• 📏 <code>/overhang [Штат]</code> — Свесы, габариты и правила весовых\n"
-            "• 👤 <code>/profile</code> — Твой сетап и статус (стингер vs виджик)\n"
-            "• 🆘 <code>/help</code> — Связь с дежурным диспетчером\n\n"
-            "👉 <i>Просто выбери команду из синего Меню или напиши сюда свой вопрос/скинь гео-пику!</i>"
+            "🚛 <b>Диспетчер на связи.</b>\n"
+            "Прикрываю автовозников на дороге 24/7 по любым вопросам: споры с брокерами, простой, срыв, солярка, свесы, ремонт.\n\n"
+            "• ⛽ <code>/fuel</code> — Поиск дешевого дизеля по геолокации или городу\n"
+            "• 🔧 <code>/repair</code> — Выездные мастера (Cash/Zelle, без репортов в DOT)\n"
+            "• 🔍 <code>/broker MC#</code> — Экспресс-проверка брокера и бонда $75,000\n"
+            "• ⚖️ <code>/claim</code> — Готовые претензии на Детеншен ($75/ч) и TONU ($250)\n"
+            "• 📏 <code>/overhang [Штат]</code> — Допустимые свесы и высоты\n"
+            "• 👤 <code>/profile</code> — Сменить сетап (Стингер / Виджик)\n\n"
+            "<i>Или просто пиши любой вопрос в чат — отвечу сразу.</i>"
         )
         send_telegram_message(chat_id, welcome_text, reply_to_message_id=msg_id)
         return
@@ -461,14 +489,15 @@ def process_message(msg):
     if text.startswith("/fuel"):
         parts = text.split(maxsplit=1)
         query_loc = parts[1] if len(parts) > 1 else ""
+        known_truck = profile.get("truck_type") if profile.get("truck_type") != "Неизвестно" else "Стингер 9-кар (Class 8)"
         if query_loc:
-            known_truck = profile.get("truck_type") if profile.get("truck_type") != "Неизвестно" else "Стингер 9-кар (Class 8)"
             ack_text = f"⏳ <b>Секунду!</b> Пробиваю заправки и цены на дизель для {query_loc}... Это может занять около минуты."
             ack_msg = send_telegram_message(chat_id, ack_text, reply_to_message_id=msg_id)
             ack_msg_id = ack_msg.get("result", {}).get("message_id") if ack_msg else None
 
             send_chat_action(chat_id, "typing")
             fuel_answer = generate_fuel_recommendations(query_loc, driver_setup=known_truck, cargo="Груженый")
+            record_chat_turn(chat_id, "model", fuel_answer)
             if ack_msg_id:
                 res = edit_telegram_message(chat_id, ack_msg_id, fuel_answer)
                 if not res or not res.get("ok"):
@@ -478,83 +507,45 @@ def process_message(msg):
             return
 
         set_driver_session(chat_id, state="awaiting_fuel_details")
-        prompt_msg = (
-            "⛽ <b>ПОИСК ТОПЛИВА И ТРАК-СТОПОВ ДЛЯ АВТОВОЗА:</b>\n\n"
-            "1. Нажми 📎 <b>Скрепку</b> в поле ввода -> выбери <b>«Геолокация»</b> (📍 Location).\n"
-            "2. Отправь свою точку на трассе.\n"
-            "3. Я мгновенно найду:\n"
-            "• 📍 Самую близкую заправку\n"
-            "• 💰 Самую дешевую (со скидками Mudflap/RTS)\n"
-            "• 🛣️ Оптимальный трак-стоп под твой сетап с прямыми выездами и высокими навесами!\n\n"
-            "<i>Или просто напиши трассу и выход, например: 'I-80 exit 359 WY'</i>"
-        )
+        prompt_msg = get_fuel_request_prompt()
         send_telegram_message(chat_id, prompt_msg, reply_to_message_id=msg_id)
+        record_chat_turn(chat_id, "model", prompt_msg)
         return
 
     # Fuel Intelligence Flow
     session = get_driver_session(chat_id)
     session_state = session.get("state")
+    known_truck = profile.get("truck_type") if profile.get("truck_type") != "Неизвестно" else "Стингер 9-кар (Class 8)"
 
-    # A. Did driver send location pin OR are they responding to fuel request?
+    # A. Did driver send location pin OR are they in awaiting_fuel_details state?
     if location or session_state == "awaiting_fuel_details":
-        loc_str = loc_str_quick or session.get("last_query") or text
-        if location and not loc_str_quick:
-            lat = location.get("latitude")
-            lon = location.get("longitude")
-            loc_str = reverse_geocode(lat, lon)
-
-        setup, cargo = extract_setup_and_cargo(text)
-        known_truck = profile.get("truck_type") if profile.get("truck_type") != "Неизвестно" else None
-        driver_setup = setup or session.get("driver_setup") or known_truck
-        cargo_type = cargo or session.get("cargo_type") or (profile.get("typical_cargo") if profile.get("typical_cargo") != "Не указан" else None) or "Груженый"
-
-        # If driver rig is completely unknown: DO NOT GUESS! Politely ask the driver once.
-        if not driver_setup:
-            set_driver_session(chat_id, state="awaiting_fuel_details", last_query=loc_str)
-            ask_rig_text = (
-                f"⛽ <b>Заправка автовоза:</b> Локацию принял (📍 <i>{loc_str}</i>)!\n"
-                "Подскажи, на каком траке идешь — <b>стингер 9-кар</b> или <b>пикап с виджиком</b>? "
-                "Я сразу запомню твой сетап в базе, чтобы подбирать подходящие колонки (Truck Lanes vs RV) и высоту навеса!"
-            )
-            send_telegram_message(chat_id, ask_rig_text, reply_to_message_id=msg_id)
-            return
-
-        # Immediate fast status message as requested by user
-        ack_text = f"⏳ <b>Принял точку!</b> Сканирую трассу и проверяю актуальные цены на солярку для твоего сетапа ({driver_setup})... Это может занять около минуты."
-        ack_msg = send_telegram_message(chat_id, ack_text, reply_to_message_id=msg_id)
-        ack_msg_id = ack_msg.get("result", {}).get("message_id") if ack_msg else None
-
-        send_chat_action(chat_id, "find_location")
-        fuel_answer = generate_fuel_recommendations(loc_str, driver_setup=driver_setup, cargo=cargo_type)
-        set_driver_session(chat_id, state="idle", driver_setup=driver_setup, cargo_type=cargo_type)
-
-        if ack_msg_id:
-            res = edit_telegram_message(chat_id, ack_msg_id, fuel_answer)
-            if not res or not res.get("ok"):
-                send_telegram_message(chat_id, fuel_answer, reply_to_message_id=msg_id)
-        else:
-            send_telegram_message(chat_id, fuel_answer, reply_to_message_id=msg_id)
-        return
-
-    # B. Did driver ask about fuel / diesel / gas station?
-    if is_fuel_inquiry(text):
-        setup, cargo = extract_setup_and_cargo(text)
-        has_specific_location = any(k in text.lower() for k in [
-            "i-80", "i-70", "i-95", "i-10", "i-40", "i-35", "i-15", "i-20", "i-65", "i-75",
-            "exit", "выход", "шайенн", "cheyenne", "даллас", "dallas", "чикаго", "chicago",
-            "денвер", "denver", "техас", "texas", "вайоминг", "wyoming", "колорадо", "colorado",
-            "флорида", "florida", "майами", "miami", "орландо", "orlando", "атланта", "atlanta",
-            "возле", "рядом", "в районе", "state"
+        # Check if user is objecting, conversing or clarifying instead of sending location
+        is_conversational = any(w in text.lower() for w in [
+            "ты же", "знаешь", "в профиле", "с чего", "почему", "откуда", "небраск",
+            "зачем", "отмена", "стоп", "хватит", "нет", "не надо", "какой", "что ты"
         ])
-        
-        if setup and has_specific_location:
-            ack_text = f"⏳ <b>Секунду!</b> Пробиваю заправки и цены на дизель для {setup}... Это может занять около минуты."
+        if not location and is_conversational:
+            set_driver_session(chat_id, state="idle")
+            # Falls through to general dispatcher ask_gemini with full multi-turn CHAT_MEMORY
+        else:
+            loc_str = loc_str_quick or session.get("last_query") or text
+            if location and not loc_str_quick:
+                lat = location.get("latitude")
+                lon = location.get("longitude")
+                loc_str = reverse_geocode(lat, lon)
+
+            setup, cargo = extract_setup_and_cargo(text)
+            driver_setup = setup or session.get("driver_setup") or known_truck
+            cargo_type = cargo or session.get("cargo_type") or (profile.get("typical_cargo") if profile.get("typical_cargo") != "Не указан" else None) or "Груженый"
+
+            ack_text = f"⏳ <b>Принял точку!</b> Сканирую трассу и проверяю актуальные цены на солярку для твоего сетапа ({driver_setup})... Это может занять около минуты."
             ack_msg = send_telegram_message(chat_id, ack_text, reply_to_message_id=msg_id)
             ack_msg_id = ack_msg.get("result", {}).get("message_id") if ack_msg else None
 
-            send_chat_action(chat_id, "typing")
-            fuel_answer = generate_fuel_recommendations(text, driver_setup=setup, cargo=cargo)
-            set_driver_session(chat_id, state="idle", driver_setup=setup, cargo_type=cargo)
+            send_chat_action(chat_id, "find_location")
+            fuel_answer = generate_fuel_recommendations(loc_str, driver_setup=driver_setup, cargo=cargo_type)
+            set_driver_session(chat_id, state="idle", driver_setup=driver_setup, cargo_type=cargo_type)
+            record_chat_turn(chat_id, "model", fuel_answer)
 
             if ack_msg_id:
                 res = edit_telegram_message(chat_id, ack_msg_id, fuel_answer)
@@ -564,10 +555,42 @@ def process_message(msg):
                 send_telegram_message(chat_id, fuel_answer, reply_to_message_id=msg_id)
             return
 
-        # Ask in 1-3 lines for setup, cargo, and location pin
-        set_driver_session(chat_id, state="awaiting_fuel_details", driver_setup=setup, cargo_type=cargo, last_query=text)
+    # B. Did driver ask about fuel / diesel / gas station?
+    if is_fuel_inquiry(text):
+        setup, cargo = extract_setup_and_cargo(text)
+        driver_setup = setup or session.get("driver_setup") or known_truck
+        cargo_type = cargo or session.get("cargo_type") or "Груженый"
+
+        # Check if query contains any location string (city, state, highway, exit, etc.)
+        loc_candidate = re.sub(
+            r'(?i)\b(топливо|солярка|солярку|дизель|заправка|заправки|заправиться|где|почем|цена|тракстоп|трак-стоп|fuel|diesel|gas|station|stop)\b',
+            '',
+            text
+        ).strip()
+
+        if len(loc_candidate) >= 3:
+            ack_text = f"⏳ <b>Секунду!</b> Пробиваю заправки и цены на дизель для {driver_setup} в районе <i>{loc_candidate}</i>... Это может занять около минуты."
+            ack_msg = send_telegram_message(chat_id, ack_text, reply_to_message_id=msg_id)
+            ack_msg_id = ack_msg.get("result", {}).get("message_id") if ack_msg else None
+
+            send_chat_action(chat_id, "typing")
+            fuel_answer = generate_fuel_recommendations(loc_candidate, driver_setup=driver_setup, cargo=cargo_type)
+            set_driver_session(chat_id, state="idle", driver_setup=driver_setup, cargo_type=cargo_type)
+            record_chat_turn(chat_id, "model", fuel_answer)
+
+            if ack_msg_id:
+                res = edit_telegram_message(chat_id, ack_msg_id, fuel_answer)
+                if not res or not res.get("ok"):
+                    send_telegram_message(chat_id, fuel_answer, reply_to_message_id=msg_id)
+            else:
+                send_telegram_message(chat_id, fuel_answer, reply_to_message_id=msg_id)
+            return
+
+        # If purely "топливо" without any location: ask concisely in 1-2 lines
+        set_driver_session(chat_id, state="awaiting_fuel_details", driver_setup=driver_setup, cargo_type=cargo_type, last_query=text)
         prompt_msg = get_fuel_request_prompt()
         send_telegram_message(chat_id, prompt_msg, reply_to_message_id=msg_id)
+        record_chat_turn(chat_id, "model", prompt_msg)
         return
 
     # Indicate typing to user

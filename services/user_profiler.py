@@ -235,70 +235,35 @@ def get_profile_ai_context(telegram_id: int) -> str:
     truck = profile.get("truck_type", "Неизвестно")
     cargo = profile.get("typical_cargo", "Не указан")
     corridor = profile.get("primary_corridor", "США")
-    summary = profile.get("notes_summary", "")
 
-    context = (
-        "ПАМЯТЬ СОВЕТА О ДАННОМ ВОДИТЕЛЕ (Используй для персонализации, чтобы он чувствовал, что бот его помнит):\n"
-    )
-    if role != "Не определена":
-        context += f"• Статус/Роль: {role} (уверенность {int(profile.get('role_confidence', 0)*100)}%)\n"
-    if truck != "Неизвестно":
-        context += f"• Оборудование/Сетап: {truck}\n"
-    else:
-        context += "• Оборудование/Сетап: НЕИЗВЕСТНО (НЕ ПРИДУМЫВАЙ машину сам, обязательно спроси стингер или виджик!)\n"
-    if cargo != "Не указан":
-        context += f"• Типичный груз: {cargo}\n"
+    context = "ИНФОРМАЦИЯ О ВОДИТЕЛЕ (не переспрашивай то, что уже известно):\n"
+    if truck not in [None, "Неизвестно", "Не указан"]:
+        context += f"• Сетап/Трак: {truck}\n"
+    if role not in [None, "Не определена"]:
+        context += f"• Роль: {role}\n"
     if corridor != "Вся территория США":
-        context += f"• Основной регион/коридор: {corridor}\n"
-    if summary:
-        context += f"• Краткое резюме: {summary}\n"
+        context += f"• Коридор: {corridor}\n"
 
-    context += (
-        "ВАЖНОЕ ПРАВИЛО: Если сетап известен, дружески ссылайся на него (например: «Помню, ты на стингере...» или «Как твой виджик?»). "
-        "Если сетап НЕИЗВЕСТЕН — НИКОГДА не додумывай его сам, а прямо спроси водителя!"
-    )
     return context
 
 def format_user_profile_card(telegram_id: int) -> tuple:
     """
-    Renders an interactive user profile card for /profile command with action buttons.
+    Renders a clean, practical equipment card for /profile without internal trust metrics or role badgering.
     """
     profile = get_or_create_user_profile(telegram_id)
-    role = profile.get("user_role", "Не определена")
-    role_conf = int(profile.get("role_confidence", 0.0) * 100)
-    truck = profile.get("truck_type", "Неизвестно")
-    cargo = profile.get("typical_cargo", "Не указан")
-    corridor = profile.get("primary_corridor", "Вся территория США")
-    state = profile.get("primary_state", "US")
-    satisfaction = profile.get("satisfaction_score", 0.90)
-    interactions = profile.get("interaction_count", 1)
-
-    sat_stars = "⭐⭐⭐⭐⭐" if satisfaction >= 0.95 else ("⭐⭐⭐⭐" if satisfaction >= 0.8 else "⭐⭐⭐")
-
+    truck = profile.get("truck_type", "Не указан")
+    
     text = (
-        f"👤 <b>ПРОФИЛЬ АВТОВОЗНИКА В БАЗЕ СОВЕТА:</b>\n\n"
-        f"• <b>Статус / Роль:</b> <b>{role}</b> ({role_conf}% уверенность)\n"
-        f"• <b>Трак и Сетап:</b> <b>{truck}</b>\n"
-        f"• <b>Груз:</b> {cargo}\n"
-        f"• <b>Коридор:</b> {corridor} ({state})\n"
-        f"• <b>Индекс доверия бота:</b> {sat_stars} ({int(satisfaction * 100)}%)\n"
-        f"• <b>Обращений к диспетчеру:</b> {interactions}\n\n"
-        f"💡 <i>Бот помнит твои параметры для точного подбора заправок, весовых правил и расчета компенсаций. "
-        f"Ты можешь сменить свой сетап в 1 клик кнопками ниже:</i>"
+        f"🚛 <b>Твой текущий сетап:</b> <b>{truck}</b>\n\n"
+        f"<i>Сетап учитывается при расчете высоты навесов, заездов на трак-стопы и правил по свесам. "
+        f"Если пересел на другую машину — нажми кнопку ниже:</i>"
     )
 
     reply_markup = {
         "inline_keyboard": [
             [
                 {"text": "🚛 Стингер 9-кар", "callback_data": "setrig_stinger"},
-                {"text": "🛻 Виджик 3-4 авто", "callback_data": "setrig_wedge"}
-            ],
-            [
-                {"text": "👑 Оунер-Оператор", "callback_data": "setrole_owner"},
-                {"text": "🚚 Водитель-наймит", "callback_data": "setrole_driver"}
-            ],
-            [
-                {"text": "🔄 Сбросить профиль", "callback_data": "reset_profile"}
+                {"text": "🛻 Пикап + Виджик", "callback_data": "setrig_wedge"}
             ]
         ]
     }

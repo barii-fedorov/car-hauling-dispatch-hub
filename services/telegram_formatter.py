@@ -46,10 +46,13 @@ def markdown_to_telegram_html(text: str, max_length: int = None) -> str:
     text = re.sub(r'^\s*[\*\-]\s+', r'• ', text, flags=re.MULTILINE)
 
     # 5. Protect already existing valid Telegram HTML tags
-    valid_tag_pattern = re.compile(r'</?(?:b|i|u|s|code|pre|a)(?:\s+href="[^"]*")?>', re.IGNORECASE)
+    valid_tag_pattern = re.compile(r'</?(?:b|i|u|s|code|pre|a)(?:\s+[^>]*?)?>', re.IGNORECASE)
     protected_tags = []
     def _protect_tag(m):
-        protected_tags.append(m.group(0))
+        tag_str = m.group(0)
+        # Ensure '&' inside attributes like href is escaped as '&amp;' for Telegram HTML parser
+        tag_str = re.sub(r'&(?!amp;|lt;|gt;|quot;)', '&amp;', tag_str)
+        protected_tags.append(tag_str)
         return f"\x00HTMLTAG_{len(protected_tags)-1}\x00"
     text = valid_tag_pattern.sub(_protect_tag, text)
 
@@ -73,7 +76,10 @@ def markdown_to_telegram_html(text: str, max_length: int = None) -> str:
     text = re.sub(r'(?<![\*\w])\*([^\*\n]+?)\*(?![\*\w])', r'<i>\1</i>', text)
 
     # 12. Markdown Links: [text](url) -> <a href="url">text</a>
-    text = re.sub(r'\[([^\]\n]+)\]\((https?://[^\)\s]+)\)', r'<a href="\2">\1</a>', text)
+    def _format_markdown_link(m):
+        url = m.group(2).replace('&', '&amp;')
+        return f'<a href="{url}">{m.group(1)}</a>'
+    text = re.sub(r'\[([^\]\n]+)\]\((https?://[^\)\s]+)\)', _format_markdown_link, text)
 
     # 13. Restore protected HTML tags
     for idx, original_tag in enumerate(protected_tags):

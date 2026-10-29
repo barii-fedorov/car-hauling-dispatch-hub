@@ -10,6 +10,15 @@ import json
 import hashlib
 import subprocess
 
+import os
+import psycopg2
+
+PG_HOST = os.environ.get("POSTGRES_HOST", "postgres")
+PG_PORT = int(os.environ.get("POSTGRES_PORT", "5432"))
+PG_USER = os.environ.get("POSTGRES_USER", "dispatch_admin")
+PG_PASS = os.environ.get("POSTGRES_PASSWORD", "DispatchSecurePass2026!_pg")
+PG_DB = os.environ.get("POSTGRES_DB", "dispatch_hub")
+
 def anonymize_text(text):
     if not text:
         return ""
@@ -27,42 +36,41 @@ def log_driver_case(case_data):
     raw_driver = case_data.get("driver_id", "anonymous")
     driver_hash = "drv_" + hashlib.md5(raw_driver.encode()).hexdigest()[:6]
     
-    clean_summary = anonymize_text(case_data.get("raw_summary", "")).replace("'", "''")
-    clean_strategy = anonymize_text(case_data.get("resolution_strategy", "")).replace("'", "''")
+    clean_summary = anonymize_text(case_data.get("raw_summary", ""))
+    clean_strategy = anonymize_text(case_data.get("resolution_strategy", ""))
     
-    driver_setup = case_data.get("driver_setup", "Pickup + 3-4 car Wedge").replace("'", "''")
-    category = case_data.get("category", "Detention").replace("'", "''")
-    facility = case_data.get("facility", "Copart").replace("'", "''")
-    facility_location = case_data.get("facility_location", "Atlanta, GA").replace("'", "''")
-    state = case_data.get("state", "GA").replace("'", "''")
-    broker_name = case_data.get("broker_name", "Montway Logistics").replace("'", "''")
-    broker_mc = case_data.get("broker_mc", "MC-123456").replace("'", "''")
+    driver_setup = case_data.get("driver_setup", "Pickup + 3-4 car Wedge")
+    category = case_data.get("category", "Detention")
+    facility = case_data.get("facility", "Copart")
+    facility_location = case_data.get("facility_location", "Atlanta, GA")
+    state = case_data.get("state", "GA")
+    broker_name = case_data.get("broker_name", "Montway Logistics")
+    broker_mc = case_data.get("broker_mc", "MC-123456")
     claimed = float(case_data.get("claimed_amount", 0))
     recovered = float(case_data.get("recovered_amount", 0))
-    status = case_data.get("status", "Resolved").replace("'", "''")
+    status = case_data.get("status", "Resolved")
     minutes = int(case_data.get("time_to_resolve_minutes", 25))
 
-    # 1. Insert into PostgreSQL via docker exec
-    sql = f"""
-    INSERT INTO driver_cases 
-    (driver_id, driver_setup, category, facility, facility_location, state, broker_name, broker_mc, 
-     claimed_amount, recovered_amount, status, time_to_resolve_minutes, sanitized_case_summary, resolution_strategy)
-    VALUES ('{driver_hash}', '{driver_setup}', '{category}', '{facility}', '{facility_location}', '{state}', '{broker_name}', '{broker_mc}', {claimed}, {recovered}, '{status}', {minutes}, '{clean_summary}', '{clean_strategy}')
-    RETURNING id;
-    """
-    
     case_id = None
     try:
-        cmd = [
-            "docker", "exec", "-i", "dispatch_postgres", "psql", "-U", "dispatch_admin", "-d", "dispatch_hub", "-t", "-A", "-c", sql
-        ]
-        out = subprocess.check_output(cmd).decode().strip()
-        tokens = out.split()
-        if tokens and tokens[0].isdigit():
-            case_id = int(tokens[0])
-            print(f"Logged case #{case_id} to PostgreSQL driver_cases successfully.")
+        conn = psycopg2.connect(host=PG_HOST, port=PG_PORT, user=PG_USER, password=PG_PASS, dbname=PG_DB)
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO driver_cases 
+            (driver_id, driver_setup, category, facility, facility_location, state, broker_name, broker_mc, 
+             claimed_amount, recovered_amount, status, time_to_resolve_minutes, sanitized_case_summary, resolution_strategy)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING id;
+        """, (driver_hash, driver_setup, category, facility, facility_location, state, broker_name, broker_mc,
+              claimed, recovered, status, minutes, clean_summary, clean_strategy))
+        row = cur.fetchone()
+        if row:
+            case_id = row[0]
+        conn.commit()
+        cur.close()
+        conn.close()
     except Exception as e:
-        print(f"Error logging to PostgreSQL via psql: {e}")
+        print(f"[WARN] Error logging to PostgreSQL via psycopg2: {e}")
 
     return {
         "status": "success",
