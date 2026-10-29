@@ -258,3 +258,112 @@ def get_profile_ai_context(telegram_id: int) -> str:
         "Если сетап НЕИЗВЕСТЕН — НИКОГДА не додумывай его сам, а прямо спроси водителя!"
     )
     return context
+
+def format_user_profile_card(telegram_id: int) -> tuple:
+    """
+    Renders an interactive user profile card for /profile command with action buttons.
+    """
+    profile = get_or_create_user_profile(telegram_id)
+    role = profile.get("user_role", "Не определена")
+    role_conf = int(profile.get("role_confidence", 0.0) * 100)
+    truck = profile.get("truck_type", "Неизвестно")
+    cargo = profile.get("typical_cargo", "Не указан")
+    corridor = profile.get("primary_corridor", "Вся территория США")
+    state = profile.get("primary_state", "US")
+    satisfaction = profile.get("satisfaction_score", 0.90)
+    interactions = profile.get("interaction_count", 1)
+
+    sat_stars = "⭐⭐⭐⭐⭐" if satisfaction >= 0.95 else ("⭐⭐⭐⭐" if satisfaction >= 0.8 else "⭐⭐⭐")
+
+    text = (
+        f"👤 <b>ПРОФИЛЬ АВТОВОЗНИКА В БАЗЕ СОВЕТА:</b>\n\n"
+        f"• <b>Статус / Роль:</b> <b>{role}</b> ({role_conf}% уверенность)\n"
+        f"• <b>Трак и Сетап:</b> <b>{truck}</b>\n"
+        f"• <b>Груз:</b> {cargo}\n"
+        f"• <b>Коридор:</b> {corridor} ({state})\n"
+        f"• <b>Индекс доверия бота:</b> {sat_stars} ({int(satisfaction * 100)}%)\n"
+        f"• <b>Обращений к диспетчеру:</b> {interactions}\n\n"
+        f"💡 <i>Бот помнит твои параметры для точного подбора заправок, весовых правил и расчета компенсаций. "
+        f"Ты можешь сменить свой сетап в 1 клик кнопками ниже:</i>"
+    )
+
+    reply_markup = {
+        "inline_keyboard": [
+            [
+                {"text": "🚛 Стингер 9-кар", "callback_data": "setrig_stinger"},
+                {"text": "🛻 Виджик 3-4 авто", "callback_data": "setrig_wedge"}
+            ],
+            [
+                {"text": "👑 Оунер-Оператор", "callback_data": "setrole_owner"},
+                {"text": "🚚 Водитель-наймит", "callback_data": "setrole_driver"}
+            ],
+            [
+                {"text": "🔄 Сбросить профиль", "callback_data": "reset_profile"}
+            ]
+        ]
+    }
+    return text, reply_markup
+
+def set_manual_rig(telegram_id: int, rig_choice: str) -> dict:
+    rig_name = "Стингер 9-кар (Class 8)" if rig_choice == "stinger" else "Пикап + Виджик 3-4 авто"
+    conn = None
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            UPDATE user_profiles 
+            SET truck_type = %s, truck_confidence = 1.00, has_equipment_info = TRUE, last_active_at = NOW()
+            WHERE telegram_id = %s;
+        """, (rig_name, telegram_id))
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        print(f"[WARN] Error updating manual rig: {e}")
+        if conn:
+            conn.close()
+    return get_or_create_user_profile(telegram_id)
+
+def set_manual_role(telegram_id: int, role_choice: str) -> dict:
+    role_name = "Оунер-Оператор" if role_choice == "owner" else "Водитель-наймит"
+    conn = None
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            UPDATE user_profiles 
+            SET user_role = %s, role_confidence = 1.00, has_owner_status = TRUE, last_active_at = NOW()
+            WHERE telegram_id = %s;
+        """, (role_name, telegram_id))
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        print(f"[WARN] Error updating manual role: {e}")
+        if conn:
+            conn.close()
+    return get_or_create_user_profile(telegram_id)
+
+def reset_user_profile_data(telegram_id: int) -> dict:
+    conn = None
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            UPDATE user_profiles 
+            SET user_role = 'Не определена', role_confidence = 0.20,
+                truck_type = 'Неизвестно', truck_confidence = 0.00,
+                typical_cargo = 'Не указан', primary_corridor = 'Вся территория США',
+                has_owner_status = FALSE, has_equipment_info = FALSE,
+                last_active_at = NOW()
+            WHERE telegram_id = %s;
+        """, (telegram_id,))
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        print(f"[WARN] Error resetting profile: {e}")
+        if conn:
+            conn.close()
+    return get_or_create_user_profile(telegram_id)
+

@@ -29,8 +29,15 @@ from fuel_advisor import (
 from user_profiler import (
     analyze_and_update_profile,
     get_or_create_user_profile,
-    get_profile_ai_context
+    get_profile_ai_context,
+    format_user_profile_card,
+    set_manual_rig,
+    set_manual_role,
+    reset_user_profile_data
 )
+from broker_verifier import verify_broker
+from claim_generator import handle_claim_command
+from overhang_advisor import get_overhang_guide
 
 # Config & Credentials loaded securely from Environment Variables
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -360,16 +367,105 @@ def process_message(msg):
     if text.startswith("/start"):
         set_driver_session(chat_id, state="idle")
         welcome_text = (
-            "🚛 *Здорово, оунер! На связи Совет Агентов автовозного диспатча («Грузовики на базу»).*\n\n"
-            "Мы прикрываем твою спину на дороге 24/7. Наш принцип — **водитель всегда прав**.\n\n"
-            "🔥 *Чем помогаем прямо сейчас:*\n"
-            "• ⚖️ **Отжать деньги у брокера:** Простой (Detention $75/ч после 2ч), срыв (Dry Run / TONU $200–$250)\n"
-            "• 🛠️ **Ин-опы и развесовка:** Доплата за лебеду ($150), высоты и Bridge Formula B\n"
-            "• 🔍 **Проверка брокера:** Бонд $75,000 BMC-84, возраст MC и защита от дабл-брокеринга\n"
-            "• ⛽ **Солярка и трак-стопы:** Оптимальные цены под твой сетап (стингер vs виджик) и IFTA\n\n"
-            "👉 *Просто напиши сюда свою проблему, номер MC брокера или вопрос — Совет сразу ответит!*"
+            "🚛 <b>Здорово, оунер! На связи Совет Агентов автовозного диспатча («Грузовики на базу»).</b>\n\n"
+            "Мы прикрываем твою спину на дороге 24/7. Наш принцип — <b>водитель всегда прав</b>.\n\n"
+            "🔥 <b>Быстрые команды в меню:</b>\n"
+            "• ⛽ <code>/fuel</code> — Найти дешевый дизель по геолокации\n"
+            "• 🔍 <code>/broker MC#</code> — Проверка брокера, бонда $75k и срока оплаты\n"
+            "• ⚖️ <code>/claim</code> — Претензии на Детеншен ($75/ч) и срыв TONU ($250)\n"
+            "• 📏 <code>/overhang [Штат]</code> — Свесы, габариты и правила весовых\n"
+            "• 👤 <code>/profile</code> — Твой сетап и статус (стингер vs виджик)\n"
+            "• 🆘 <code>/help</code> — Связь с дежурным диспетчером\n\n"
+            "👉 <i>Просто выбери команду из синего Меню или напиши сюда свой вопрос/скинь гео-пику!</i>"
         )
         send_telegram_message(chat_id, welcome_text, reply_to_message_id=msg_id)
+        return
+
+    # Help command
+    if text.startswith("/help") or text.strip().lower() in ["помощь", "меню", "команды"]:
+        help_text = (
+            "🆘 <b>ДИСПЕТЧЕРСКАЯ ПОМОЩЬ И КОМАНДЫ БОТА:</b>\n\n"
+            "• ⛽ <code>/fuel</code> — Поиск дешевого дизеля и трак-стопов по GPS\n"
+            "• 🔍 <code>/broker MC#</code> — Проверка брокера, бонда $75,000 и срока оплаты\n"
+            "• ⚖️ <code>/claim</code> — Официальные претензии на Детеншен ($75/ч) и TONU ($250)\n"
+            "• 📏 <code>/overhang [Штат]</code> — Допустимые свесы, высота и веса\n"
+            "• 👤 <code>/profile</code> — Твой сохраненный профиль и оборудование\n"
+            "• 🚛 <code>/start</code> — Главное приветствие\n\n"
+            "💬 <b>Или просто пиши любой вопрос в чат:</b>\n"
+            "<i>'Сколько взять за неходовую Теслу?', 'Какая солярка дешевле в Вайоминге?', 'Коп выписал тикет за свес в Пенсильвании — что делать?'</i> — Совет ответит сразу!"
+        )
+        send_telegram_message(chat_id, help_text, reply_to_message_id=msg_id)
+        return
+
+    # Profile command
+    if text.startswith("/profile") or text.strip().lower() in ["профиль", "мой профиль", "мой сетап", "сетап"]:
+        card_text, card_markup = format_user_profile_card(chat_id)
+        send_telegram_message(chat_id, card_text, reply_to_message_id=msg_id, reply_markup=card_markup)
+        return
+
+    # Claim & Legal Generator
+    if text.startswith("/claim") or text.startswith("/detention") or text.startswith("/tonu"):
+        claim_card = handle_claim_command(text)
+        send_telegram_message(chat_id, claim_card, reply_to_message_id=msg_id)
+        return
+
+    # Overhang & Limits Advisor
+    if text.startswith("/overhang") or text.lower().startswith("свес") or text.lower().startswith("свесы"):
+        parts = text.split()
+        st = parts[1] if len(parts) > 1 else None
+        if not st:
+            st_match = re.search(r'\b(PA|FL|TX|CA|GA|OH|IN|NY|NC|SC|IL)\b', text, re.IGNORECASE)
+            if st_match:
+                st = st_match.group(1)
+        overhang_card = get_overhang_guide(st)
+        send_telegram_message(chat_id, overhang_card, reply_to_message_id=msg_id)
+        return
+
+    # Broker & MC Verification
+    if text.startswith("/broker") or text.lower().startswith("проверь брокера") or text.lower().startswith("проверка брокера"):
+        parts = text.split(maxsplit=1)
+        query = parts[1] if len(parts) > 1 else ""
+        if not query:
+            m = re.search(r'(?:проверь|проверка)\s+брокера\s*(.*)', text, re.IGNORECASE)
+            if m:
+                query = m.group(1).strip()
+        send_chat_action(chat_id, "typing")
+        broker_card = verify_broker(query)
+        send_telegram_message(chat_id, broker_card, reply_to_message_id=msg_id)
+        return
+
+    # Explicit /fuel command
+    if text.startswith("/fuel"):
+        parts = text.split(maxsplit=1)
+        query_loc = parts[1] if len(parts) > 1 else ""
+        if query_loc:
+            known_truck = profile.get("truck_type") if profile.get("truck_type") != "Неизвестно" else "Стингер 9-кар (Class 8)"
+            ack_text = f"⏳ <b>Секунду!</b> Пробиваю заправки и цены на дизель для {query_loc}... Это может занять около минуты."
+            ack_msg = send_telegram_message(chat_id, ack_text, reply_to_message_id=msg_id)
+            ack_msg_id = ack_msg.get("result", {}).get("message_id") if ack_msg else None
+
+            send_chat_action(chat_id, "typing")
+            fuel_answer = generate_fuel_recommendations(query_loc, driver_setup=known_truck, cargo="Груженый")
+            if ack_msg_id:
+                res = edit_telegram_message(chat_id, ack_msg_id, fuel_answer)
+                if not res or not res.get("ok"):
+                    send_telegram_message(chat_id, fuel_answer, reply_to_message_id=msg_id)
+            else:
+                send_telegram_message(chat_id, fuel_answer, reply_to_message_id=msg_id)
+            return
+
+        set_driver_session(chat_id, state="awaiting_fuel_details")
+        prompt_msg = (
+            "⛽ <b>ПОИСК ТОПЛИВА И ТРАК-СТОПОВ ДЛЯ АВТОВОЗА:</b>\n\n"
+            "1. Нажми 📎 <b>Скрепку</b> в поле ввода -> выбери <b>«Геолокация»</b> (📍 Location).\n"
+            "2. Отправь свою точку на трассе.\n"
+            "3. Я мгновенно найду:\n"
+            "• 📍 Самую близкую заправку\n"
+            "• 💰 Самую дешевую (со скидками Mudflap/RTS)\n"
+            "• 🛣️ Оптимальный трак-стоп под твой сетап с прямыми выездами и высокими навесами!\n\n"
+            "<i>Или просто напиши трассу и выход, например: 'I-80 exit 359 WY'</i>"
+        )
+        send_telegram_message(chat_id, prompt_msg, reply_to_message_id=msg_id)
         return
 
     # Fuel Intelligence Flow
@@ -521,6 +617,35 @@ def process_callback_query(cb):
 
     thread_id = msg.get("message_thread_id")
 
+    # Profile Interactive Callbacks
+    if data.startswith("setrig_"):
+        rig_choice = data.replace("setrig_", "")
+        from_id = from_user.get("id") or chat_id
+        prof = set_manual_rig(from_id, rig_choice)
+        rig_title = prof.get("truck_type")
+        answer_callback_query(cb_id, text=f"Сетап обновлен: {rig_title}")
+        new_text, new_markup = format_user_profile_card(from_id)
+        edit_telegram_message(chat_id, msg_id, new_text, reply_markup=new_markup)
+        return
+
+    if data.startswith("setrole_"):
+        role_choice = data.replace("setrole_", "")
+        from_id = from_user.get("id") or chat_id
+        prof = set_manual_role(from_id, role_choice)
+        role_title = prof.get("user_role")
+        answer_callback_query(cb_id, text=f"Статус обновлен: {role_title}")
+        new_text, new_markup = format_user_profile_card(from_id)
+        edit_telegram_message(chat_id, msg_id, new_text, reply_markup=new_markup)
+        return
+
+    if data == "reset_profile":
+        from_id = from_user.get("id") or chat_id
+        reset_user_profile_data(from_id)
+        answer_callback_query(cb_id, text="Профиль сброшен к начальным настройкам")
+        new_text, new_markup = format_user_profile_card(from_id)
+        edit_telegram_message(chat_id, msg_id, new_text, reply_markup=new_markup)
+        return
+
     if data.startswith("publish_"):
         post_id = data.replace("publish_", "")
         # 1. Fetch post from PostgreSQL
@@ -630,8 +755,40 @@ def process_callback_query(cb):
         send_telegram_message(chat_id, f"❌ **ОТКЛОНЕНО @{username}**", reply_to_message_id=msg_id, message_thread_id=thread_id)
         answer_callback_query(cb_id, text="Пост отклонен.")
 
+def setup_telegram_commands():
+    """
+    Registers native Telegram bot commands for the menu button.
+    """
+    if not API_URL:
+        return
+    commands = [
+        {"command": "fuel", "description": "⛽ Дешевый дизель по геолокации"},
+        {"command": "broker", "description": "🔍 Проверка брокера по MC (бонд $75k)"},
+        {"command": "claim", "description": "⚖️ Претензия: Детеншен ($75/ч) / TONU"},
+        {"command": "overhang", "description": "📏 Свесы, габариты и правила по штатам"},
+        {"command": "profile", "description": "👤 Мой профиль (трак, статус, коридор)"},
+        {"command": "start", "description": "🚛 Главное меню диспетчера"},
+        {"command": "help", "description": "🆘 Помощь и дежурный диспетчер"}
+    ]
+    url = f"{API_URL}/setMyCommands"
+    try:
+        req = urllib.request.Request(
+            url,
+            data=json.dumps({"commands": commands}).encode("utf-8"),
+            headers={"Content-Type": "application/json"}
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            res = json.loads(resp.read().decode())
+            if res.get("ok"):
+                print("[OK] Native Telegram bot commands registered successfully!")
+            else:
+                print(f"[WARN] setMyCommands returned: {res}")
+    except Exception as e:
+        print(f"[WARN] Failed to set native bot commands: {e}")
+
 def run_bot():
     print(f"[START] Starting Telegram Bot Daemon for @CarHaulerSOS_bot...")
+    setup_telegram_commands()
     init_fuel_session_db()
     offset = 0
     while True:
