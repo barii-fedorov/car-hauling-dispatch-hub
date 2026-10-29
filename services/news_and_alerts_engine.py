@@ -204,26 +204,25 @@ def generate_news_post(item):
 """
     return ask_gemini_prompt(prompt)
 
+TOPIC_NEWS_ID = int(os.environ.get("TOPIC_NEWS_ID", "22"))      # Topic 1: Большие новости
+TOPIC_ALERTS_ID = int(os.environ.get("TOPIC_ALERTS_ID", "23"))  # Topic 2: Дорожные алерты
+
 def generate_road_alert_post(item):
     """
-    Creates a fast, short road incident or weather alert for car haulers.
+    Creates a strictly TWO-LINE real-time road condition alert for car haulers without images.
     """
     prompt = f"""
-Ты — Дорожный Дозор автовозного диспатча («Грузовики на базу»).
-Сделай короткий срочный дорожный алерт для водителей автовозов на основе новости:
+Ты — Дорожный Дозор американского автовозного диспатча («Грузовики на базу»).
+На основе данных составь СТРОГО 2-СТРОЧНЫЙ оперативный дорожный алерт для водителей автовозов:
 
 ЗАГОЛОВОК: {item['title']}
-ТЕКСТ: {item['content'][:800]}
+ТЕКСТ: {item['content'][:600]}
 
-ФОРМАТ ПОСТА:
-🚨 **ДОРОЖНЫЙ АЛЕРТ: [Трасса/Коридор] ([Штат])**
-
-⚠️ **Ситуация:** (1-2 предложения: что перекрыто, завал, сильный ветер, проверка DOT)
-🚛 **Совет автовозам:** (1 предложение: стингерам/виджикам объехать, отстояться на трак-стопе, приготовить цепи)
-
-🏷️ **Хештеги:** #Алерт #[Трасса] #[Штат] #[Сетап] (например #Алерт #I80 #WY #Погода #Стингер)
-
-Кратко, по-деловому, без воды.
+ЖЕСТКИЕ ПРАВИЛА:
+1. ДЛИНА: РОВНО ДВЕ СТРОКИ! Ни строчки больше, никаких пустых строк между ними.
+2. СТРОКА 1: 🚨 [Трасса] ([Штат]): что перекрыто или происходит прямо сейчас (ДТП, метель, ветер, весы).
+3. СТРОКА 2: ⚠️ Совет автовозам (объезд, отстой на трак-стопе) + #Алерт #[Трасса] #[Штат] #[Сетап]
+4. НИКАКИХ картинок, вступлений и приветствий. Только 2 информативные строки!
 """
     return ask_gemini_prompt(prompt)
 
@@ -233,45 +232,37 @@ PG_USER = os.environ.get("POSTGRES_USER", "dispatch_admin")
 PG_PASS = os.environ.get("POSTGRES_PASSWORD", "DispatchSecurePass2026!_pg")
 PG_DB = os.environ.get("POSTGRES_DB", "dispatch_hub")
 
-def send_draft_for_approval(post_id, post_type, title, text, image_url=None):
+def send_draft_for_approval(post_id, post_type, title, text, image_url=None, thread_id=None):
     if not BOT_TOKEN:
         print("[ERROR] TELEGRAM_BOT_TOKEN is missing!")
         return False
 
-    # 1. Register in PostgreSQL
-    try:
-        import psycopg2
-        conn = psycopg2.connect(host=PG_HOST, port=PG_PORT, user=PG_USER, password=PG_PASS, dbname=PG_DB)
-        cur = conn.cursor()
-        category = "Accidents" if "алерт" in text.lower() else "News"
-        cur.execute("""
-            INSERT INTO telegram_posts (post_id, post_type, title, summary, content, image_url, primary_category, status)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, 'pending_approval')
-            ON CONFLICT (post_id) DO NOTHING;
-        """, (post_id, post_type, title, text[:200], text, image_url, category))
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        print(f"[WARN] Failed to insert draft into DB: {e}")
+    if thread_id is None:
+        thread_id = TOPIC_ALERTS_ID if post_type == "alert" else TOPIC_NEWS_ID
 
-    # 2. Dispatch to Cabinet with Inline Approval Buttons
+    # 1. Dispatch to Cabinet Topic with Inline Approval Buttons
     reply_markup = {
         "inline_keyboard": [
             [
                 {"text": "✅ Опубликовать в канал", "callback_data": f"publish_{post_id}"},
+                {"text": "🔄 На доработку", "callback_data": f"revise_{post_id}"}
+            ],
+            [
                 {"text": "❌ Отклонить", "callback_data": f"reject_{post_id}"}
             ]
         ]
     }
 
-    header = "📋 **[НОВЫЙ ЧЕРНОВИК НА АПРУВ]**\n\n"
+    header = "📋 **[ЧЕРНОВИК НА АПРУВ]**\n\n"
     full_text = header + text
     caption_text = full_text[:1020]
+    cabinet_msg_id = None
 
-    if image_url:
+    if image_url and post_type != "alert":
         photo_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
         payload = {
             "chat_id": ADMIN_CHAT_ID,
+            "message_thread_id": thread_id,
             "photo": image_url,
             "caption": caption_text,
             "parse_mode": "Markdown",
@@ -280,41 +271,65 @@ def send_draft_for_approval(post_id, post_type, title, text, image_url=None):
         try:
             req = urllib.request.Request(photo_url, data=json.dumps(payload).encode("utf-8"), headers={"Content-Type": "application/json"})
             with urllib.request.urlopen(req, timeout=15) as resp:
-                print(f"[OK] Draft with photo sent to Cabinet for approval: {title}")
-                return True
+                res_data = json.loads(resp.read().decode())
+                cabinet_msg_id = res_data["result"]["message_id"]
+                print(f"[OK] Draft with photo sent to Cabinet Topic {thread_id}: {title}")
         except Exception:
             payload.pop("parse_mode", None)
             try:
                 req = urllib.request.Request(photo_url, data=json.dumps(payload).encode("utf-8"), headers={"Content-Type": "application/json"})
-                urllib.request.urlopen(req, timeout=15)
-                print(f"[OK] Draft with photo sent to Cabinet (plain text fallback)")
-                return True
+                with urllib.request.urlopen(req, timeout=15) as resp:
+                    res_data = json.loads(resp.read().decode())
+                    cabinet_msg_id = res_data["result"]["message_id"]
+                    print(f"[OK] Draft with photo sent to Cabinet Topic {thread_id} (plain text fallback)")
             except Exception as e:
                 print(f"[WARN] sendPhoto to Cabinet failed: {e}")
 
-    # Text-only fallback to Cabinet
-    msg_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": ADMIN_CHAT_ID,
-        "text": full_text,
-        "parse_mode": "Markdown",
-        "reply_markup": reply_markup
-    }
-    try:
-        req = urllib.request.Request(msg_url, data=json.dumps(payload).encode("utf-8"), headers={"Content-Type": "application/json"})
-        urllib.request.urlopen(req, timeout=15)
-        print(f"[OK] Text draft sent to Cabinet for approval: {title}")
-        return True
-    except Exception:
-        payload.pop("parse_mode", None)
+    # Text-only (for road alerts or if photo failed)
+    if not cabinet_msg_id:
+        msg_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        payload = {
+            "chat_id": ADMIN_CHAT_ID,
+            "message_thread_id": thread_id,
+            "text": full_text,
+            "parse_mode": "Markdown",
+            "reply_markup": reply_markup
+        }
         try:
             req = urllib.request.Request(msg_url, data=json.dumps(payload).encode("utf-8"), headers={"Content-Type": "application/json"})
-            urllib.request.urlopen(req, timeout=15)
-            print(f"[OK] Text draft sent to Cabinet (plain text fallback)")
-            return True
-        except Exception as e:
-            print(f"[ERROR] Failed to send draft to Cabinet: {e}")
-            return False
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                res_data = json.loads(resp.read().decode())
+                cabinet_msg_id = res_data["result"]["message_id"]
+                print(f"[OK] Text draft sent to Cabinet Topic {thread_id}: {title}")
+        except Exception:
+            payload.pop("parse_mode", None)
+            try:
+                req = urllib.request.Request(msg_url, data=json.dumps(payload).encode("utf-8"), headers={"Content-Type": "application/json"})
+                with urllib.request.urlopen(req, timeout=15) as resp:
+                    res_data = json.loads(resp.read().decode())
+                    cabinet_msg_id = res_data["result"]["message_id"]
+                    print(f"[OK] Text draft sent to Cabinet Topic {thread_id} (plain text fallback)")
+            except Exception as e:
+                print(f"[ERROR] Failed to send draft to Cabinet: {e}")
+                return False
+
+    # 2. Register in PostgreSQL
+    try:
+        import psycopg2
+        conn = psycopg2.connect(host=PG_HOST, port=PG_PORT, user=PG_USER, password=PG_PASS, dbname=PG_DB)
+        cur = conn.cursor()
+        category = "Accidents" if post_type == "alert" else "News"
+        cur.execute("""
+            INSERT INTO telegram_posts (post_id, post_type, title, summary, content, image_url, primary_category, status, cabinet_message_id)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, 'pending_approval', %s)
+            ON CONFLICT (post_id) DO UPDATE SET content = EXCLUDED.content, cabinet_message_id = EXCLUDED.cabinet_message_id;
+        """, (post_id, post_type, title, text[:200], text, image_url if post_type != "alert" else None, category, cabinet_msg_id))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"[WARN] Failed to insert draft into DB: {e}")
+
+    return True
 
 def run_news_pipeline():
     print(f"[{datetime.now()}] [NEWS PIPELINE] Checking for high-impact car hauler news...")
@@ -328,9 +343,9 @@ def run_news_pipeline():
         post_text = generate_news_post(item)
         if post_text:
             post_id = f"news_{int(time.time())}_{abs(hash(item['guid'])) % 10000}"
-            if send_draft_for_approval(post_id, "news", item["title"], post_text, image_url=item["image_url"]):
+            if send_draft_for_approval(post_id, "news", item["title"], post_text, image_url=item["image_url"], thread_id=TOPIC_NEWS_ID):
                 mark_processed(item["guid"], item["title"], "news")
-                print(f"[SUBMITTED TO CABINET] {item['title']}")
+                print(f"[SUBMITTED TO CABINET TOPIC 22] {item['title']}")
                 break
             else:
                 print(f"[FAIL] Could not send to Cabinet: {item['title']}")
@@ -351,12 +366,13 @@ def run_alerts_pipeline():
             continue
 
         print(f"[CRITICAL ROAD ALERT] {item['title']}")
+        # Road alerts are strictly 2 lines, NO images
         alert_text = generate_road_alert_post(item)
         if alert_text:
             post_id = f"alert_{int(time.time())}_{abs(hash(item['guid'])) % 10000}"
-            if send_draft_for_approval(post_id, "alert", item["title"], alert_text, image_url=item["image_url"]):
+            if send_draft_for_approval(post_id, "alert", item["title"], alert_text, image_url=None, thread_id=TOPIC_ALERTS_ID):
                 mark_processed(item["guid"], item["title"], "alert")
-                print(f"[SUBMITTED TO CABINET] {item['title']}")
+                print(f"[SUBMITTED TO CABINET TOPIC 23] {item['title']}")
                 count += 1
                 if count >= 2:
                     break

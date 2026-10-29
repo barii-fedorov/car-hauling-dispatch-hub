@@ -70,23 +70,28 @@ def send_chat_action(chat_id, action="typing"):
     except Exception:
         pass
 
-def send_telegram_message(chat_id, text, reply_to_message_id=None):
+def send_telegram_message(chat_id, text, reply_to_message_id=None, message_thread_id=None, reply_markup=None):
+    payload = {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "Markdown"
+    }
+    if reply_to_message_id:
+        payload["reply_to_message_id"] = reply_to_message_id
+    if message_thread_id:
+        payload["message_thread_id"] = message_thread_id
+    if reply_markup is not None:
+        payload["reply_markup"] = reply_markup
+    
+    url = f"{API_URL}/sendMessage"
     try:
-        url = f"{API_URL}/sendMessage"
-        payload = {
-            "chat_id": chat_id,
-            "text": text,
-            "parse_mode": "Markdown"
-        }
-        if reply_to_message_id:
-            payload["reply_to_message_id"] = reply_to_message_id
-        
         req = urllib.request.Request(
             url,
             data=json.dumps(payload).encode("utf-8"),
             headers={"Content-Type": "application/json"}
         )
-        urllib.request.urlopen(req, timeout=10)
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return json.loads(resp.read().decode())
     except urllib.error.HTTPError:
         try:
             payload.pop("parse_mode", None)
@@ -95,11 +100,32 @@ def send_telegram_message(chat_id, text, reply_to_message_id=None):
                 data=json.dumps(payload).encode("utf-8"),
                 headers={"Content-Type": "application/json"}
             )
-            urllib.request.urlopen(req, timeout=10)
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                return json.loads(resp.read().decode())
         except Exception as ex:
             print(f"[ERROR] Failed to send fallback message: {ex}")
     except Exception as e:
         print(f"[ERROR] Failed to send message: {e}")
+    return None
+
+def ask_gemini_direct(prompt):
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key={GEMINI_KEY}"
+    payload = {
+        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+        "generationConfig": {"temperature": 0.2, "maxOutputTokens": 800}
+    }
+    req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read().decode())
+            candidates = data.get("candidates", [])
+            if candidates:
+                parts = candidates[0].get("content", {}).get("parts", [])
+                if parts:
+                    return parts[0].get("text", "").strip()
+    except Exception as e:
+        print(f"[ERROR] Gemini direct call failed: {e}")
+    return None
 
 def ask_gemini(user_message):
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key={GEMINI_KEY}"
@@ -140,11 +166,121 @@ def process_message(msg):
     text = msg.get("text", "").strip()
     from_user = msg.get("from", {})
     username = from_user.get("username", from_user.get("first_name", "оунер"))
+    thread_id = msg.get("message_thread_id")
 
     if not text or not chat_id:
         return
 
-    print(f"[MSG] From @{username} (chat {chat_id}): {text}")
+    print(f"[MSG] From @{username} (chat {chat_id}, thread {thread_id}): {text}")
+
+    # Check if this is an admin revision comment in Cabinet
+    reply_to = msg.get("reply_to_message")
+    if str(chat_id) == str(ADMIN_CHAT_ID) and reply_to:
+        reply_msg_id = reply_to.get("message_id")
+        post = None
+        try:
+            import psycopg2
+            conn = psycopg2.connect(host=PG_HOST, port=PG_PORT, user=PG_USER, password=PG_PASS, dbname=PG_DB)
+            cur = conn.cursor()
+            # 1. Match exact cabinet_message_id
+            cur.execute("""
+                SELECT post_id, title, content, image_url, post_type 
+                FROM telegram_posts 
+                WHERE cabinet_message_id = %s
+                LIMIT 1;
+            """, (reply_msg_id,))
+            post = cur.fetchone()
+
+            # 2. If not found by exact message id, match most recent pending post
+            if not post:
+                cur.execute("""
+                    SELECT post_id, title, content, image_url, post_type 
+                    FROM telegram_posts 
+                    WHERE status IN ('revision_pending', 'pending_approval')
+                    ORDER BY id DESC LIMIT 1;
+                """)
+                post = cur.fetchone()
+            conn.close()
+        except Exception as ex:
+            print(f"[WARN] Error finding post for revision: {ex}")
+
+        if post:
+            post_id, p_title, p_content, p_image, p_type = post
+            send_chat_action(chat_id, "typing")
+            
+            if p_type == "alert":
+                revision_prompt = f"""
+Ты — Дорожный Дозор американского автовозного диспатча («Грузовики на базу»).
+Администратор дал комментарий к дорожному алерту:
+"{text}"
+
+ИСХОДНЫЙ ЧЕРНОВИК:
+{p_content}
+
+ЗАДАЧА:
+Перепиши алерт с учетом замечаний администратора.
+СТРОГО СОБЛЮДАЙ ПРАВИЛА:
+1. ДЛИНА: РОВНО ДВЕ СТРОКИ! Ни строчки больше, никаких пустых строк между ними.
+2. СТРОКА 1: 🚨 [Трасса] ([Штат]): что перекрыто/происходит прямо сейчас.
+3. СТРОКА 2: ⚠️ Совет водителям автовозов + хештеги #Алерт #[Трасса] #[Штат]
+"""
+            else:
+                revision_prompt = f"""
+Ты — Совет Агентов американского автовозного диспатча («Грузовики на базу»).
+Администратор дал комментарий к черновику поста:
+"{text}"
+
+ИСХОДНЫЙ ЧЕРНОВИК:
+{p_content}
+
+ЗАДАЧА:
+Перепиши пост строго с учетом пожеланий администратора.
+Сохраняй сочный язык американских автовозников, ключевые факты и блок хештегов в конце.
+"""
+            revised_text = ask_gemini_direct(revision_prompt)
+            if revised_text:
+                reply_markup = {
+                    "inline_keyboard": [
+                        [
+                            {"text": "✅ Опубликовать в канал", "callback_data": f"publish_{post_id}"},
+                            {"text": "🔄 На доработку", "callback_data": f"revise_{post_id}"}
+                        ],
+                        [
+                            {"text": "❌ Отклонить", "callback_data": f"reject_{post_id}"}
+                        ]
+                    ]
+                }
+                rev_caption = f"✨ **[ОБНОВЛЕННЫЙ ЧЕРНОВИК С УЧЕТОМ ЗАМЕЧАНИЙ]**\n\n" + revised_text
+                sent_res = send_telegram_message(
+                    chat_id, 
+                    rev_caption, 
+                    reply_to_message_id=msg_id, 
+                    message_thread_id=thread_id, 
+                    reply_markup=reply_markup
+                )
+                new_msg_id = sent_res["result"]["message_id"] if sent_res and "result" in sent_res else None
+
+                try:
+                    import psycopg2
+                    conn = psycopg2.connect(host=PG_HOST, port=PG_PORT, user=PG_USER, password=PG_PASS, dbname=PG_DB)
+                    cur = conn.cursor()
+                    if new_msg_id:
+                        cur.execute("""
+                            UPDATE telegram_posts 
+                            SET content = %s, status = 'pending_approval', cabinet_message_id = %s
+                            WHERE post_id = %s;
+                        """, (revised_text, new_msg_id, post_id))
+                    else:
+                        cur.execute("""
+                            UPDATE telegram_posts 
+                            SET content = %s, status = 'pending_approval'
+                            WHERE post_id = %s;
+                        """, (revised_text, post_id))
+                    conn.commit()
+                    conn.close()
+                except Exception as ex:
+                    print(f"[WARN] DB update failed: {ex}")
+                return
 
     # Start command
     if text.startswith("/start"):
@@ -229,6 +365,8 @@ def process_callback_query(cb):
 
     print(f"[CALLBACK] Button clicked by @{username}: data='{data}' (msg {msg_id})")
 
+    thread_id = msg.get("message_thread_id")
+
     if data.startswith("publish_"):
         post_id = data.replace("publish_", "")
         # 1. Fetch post from PostgreSQL
@@ -236,13 +374,13 @@ def process_callback_query(cb):
             import psycopg2
             conn = psycopg2.connect(host=PG_HOST, port=PG_PORT, user=PG_USER, password=PG_PASS, dbname=PG_DB)
             cur = conn.cursor()
-            cur.execute("SELECT title, content, image_url FROM telegram_posts WHERE post_id = %s;", (post_id,))
+            cur.execute("SELECT title, content, image_url, post_type FROM telegram_posts WHERE post_id = %s;", (post_id,))
             post = cur.fetchone()
             if post:
-                title, content, image_url = post
+                title, content, image_url, post_type = post
                 # 2. Publish to Channel
                 channel_msg_id = None
-                if image_url:
+                if image_url and post_type != "alert":
                     photo_url = f"{API_URL}/sendPhoto"
                     p_load = {"chat_id": CHANNEL_ID, "photo": image_url, "caption": content[:1020], "parse_mode": "Markdown"}
                     try:
@@ -284,8 +422,32 @@ def process_callback_query(cb):
 
         # 4. Remove buttons and update Cabinet message
         edit_message_reply_markup(chat_id, msg_id, None)
-        send_telegram_message(chat_id, f"✅ **ОДОБРЕНО И ОПУБЛИКОВАНО в канал @{username}**", reply_to_message_id=msg_id)
+        send_telegram_message(chat_id, f"✅ **ОДОБРЕНО И ОПУБЛИКОВАНО в канал @{username}**", reply_to_message_id=msg_id, message_thread_id=thread_id)
         answer_callback_query(cb_id, text="🚀 Пост успешно опубликован в канал «Грузовики на базу»!")
+
+    elif data.startswith("revise_"):
+        post_id = data.replace("revise_", "")
+        try:
+            import psycopg2
+            conn = psycopg2.connect(host=PG_HOST, port=PG_PORT, user=PG_USER, password=PG_PASS, dbname=PG_DB)
+            cur = conn.cursor()
+            cur.execute("""
+                UPDATE telegram_posts 
+                SET status = 'revision_pending'
+                WHERE post_id = %s;
+            """, (post_id,))
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            print(f"[ERROR] DB update failed: {e}")
+
+        send_telegram_message(
+            chat_id,
+            "🔄 **Черновик отправлен на доработку!**\n\nОтветьте *(Reply)* на сообщение с черновиком выше и напишите, что изменить или добавить — AI автоматически создаст новую версию.",
+            reply_to_message_id=msg_id,
+            message_thread_id=thread_id
+        )
+        answer_callback_query(cb_id, text="Черновик отправлен на доработку. Напишите комментарий в ответ!")
 
     elif data.startswith("reject_"):
         post_id = data.replace("reject_", "")
@@ -305,7 +467,7 @@ def process_callback_query(cb):
 
         # Remove buttons and update Cabinet message
         edit_message_reply_markup(chat_id, msg_id, None)
-        send_telegram_message(chat_id, f"❌ **ОТКЛОНЕНО @{username}**", reply_to_message_id=msg_id)
+        send_telegram_message(chat_id, f"❌ **ОТКЛОНЕНО @{username}**", reply_to_message_id=msg_id, message_thread_id=thread_id)
         answer_callback_query(cb_id, text="Пост отклонен.")
 
 def run_bot():
