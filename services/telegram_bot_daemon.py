@@ -264,7 +264,10 @@ def ask_gemini(user_message, chat_id=None):
                     answer_text = parts[0].get("text", "")
                     if answer_text:
                         try:
-                            from services.grounding_verifier import multi_agent_sense_check
+                            try:
+                                from services.grounding_verifier import multi_agent_sense_check
+                            except ImportError:
+                                from grounding_verifier import multi_agent_sense_check
                             answer_text = multi_agent_sense_check(answer_text, context_type="general")
                         except Exception:
                             pass
@@ -856,7 +859,10 @@ def run_bot():
     setup_telegram_commands()
     init_fuel_session_db()
     try:
-        from services.aaa_fuel_feed import init_state_fuel_table, sync_state_fuel_prices
+        try:
+            from services.aaa_fuel_feed import init_state_fuel_table, sync_state_fuel_prices
+        except ImportError:
+            from aaa_fuel_feed import init_state_fuel_table, sync_state_fuel_prices
         init_state_fuel_table()
         sync_state_fuel_prices()
     except Exception as ex:

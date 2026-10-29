@@ -13,7 +13,10 @@ import re
 import json
 import os
 import urllib.request
-from services.aaa_fuel_feed import get_state_diesel_benchmark, validate_diesel_price, US_STATE_NAME_TO_CODE
+try:
+    from services.aaa_fuel_feed import get_state_diesel_benchmark, validate_diesel_price, US_STATE_NAME_TO_CODE
+except ImportError:
+    from aaa_fuel_feed import get_state_diesel_benchmark, validate_diesel_price, US_STATE_NAME_TO_CODE
 
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "")
 

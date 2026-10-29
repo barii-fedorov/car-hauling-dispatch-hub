@@ -9,7 +9,10 @@ import os
 import json
 import urllib.request
 import urllib.parse
-from services.aaa_fuel_feed import validate_diesel_price, get_state_diesel_benchmark
+try:
+    from services.aaa_fuel_feed import validate_diesel_price, get_state_diesel_benchmark
+except ImportError:
+    from aaa_fuel_feed import validate_diesel_price, get_state_diesel_benchmark
 
 HERE_API_KEY = os.environ.get("HERE_API_KEY", "")
 HERE_FUEL_ENDPOINT = "https://fuel.hereapi.com/v3/stations"
