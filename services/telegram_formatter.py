@@ -1,7 +1,7 @@
 """
 Telegram Formatter Module
 Ensures 100% reliable HTML formatting for Telegram messages and photo captions.
-Converts Markdown (*, **, _, `, ```, []) from AI models into valid Telegram HTML tags (<b>, <i>, <code>, <pre>, <a>),
+Converts Markdown (*, **, _, `, ```, [], # headers, bullet lists) from AI models into valid Telegram HTML tags (<b>, <i>, <code>, <pre>, <a>),
 escapes raw HTML entities, balances tags, and prevents parser errors on hashtags, punctuation, and emojis.
 """
 
@@ -36,29 +36,39 @@ def markdown_to_telegram_html(text: str, max_length: int = None) -> str:
         else:
             text = text[:max_length - 80] + "..."
 
-    # 2. Escape &, <, > so plain text never triggers HTML parse errors
+    # 2. Convert markdown headers: ### Header or ## Header -> **Header**
+    text = re.sub(r'^(?:#{1,6})\s*(.+)$', r'**\1**', text, flags=re.MULTILINE)
+
+    # 3. Convert markdown list bullets: '*   ' or '-   ' -> '• '
+    text = re.sub(r'^\s*[\*\-]\s+', r'• ', text, flags=re.MULTILINE)
+
+    # 4. Escape &, <, > so plain text never triggers HTML parse errors
     text = html.escape(text, quote=False)
 
-    # 3. Code blocks ```lang\ncode``` -> <pre><code>code</code></pre>
+    # 5. Code blocks ```lang\ncode``` -> <pre><code>code</code></pre>
     text = re.sub(r'```([a-zA-Z0-9_\-]*)\n?(.*?)```', r'<pre><code>\2</code></pre>', text, flags=re.DOTALL)
 
-    # 4. Inline code `code` -> <code>code</code>
+    # 6. Inline code `code` -> <code>code</code>
     text = re.sub(r'`([^`\n]+)`', r'<code>\1</code>', text)
 
-    # 5. Bold: **text** or __text__ -> <b>text</b>
+    # 7. Bold and Italic combinations (e.g. ***text*** or ***text**)
+    text = re.sub(r'\*\*\*(.+?)\*\*\*', r'<b><i>\1</i></b>', text, flags=re.DOTALL)
+    text = re.sub(r'\*\*\*(.+?)\*\*', r'<b><i>\1</i></b>', text, flags=re.DOTALL)
+
+    # 8. Bold: **text** or __text__ -> <b>text</b>
     text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text, flags=re.DOTALL)
     text = re.sub(r'__(.+?)__', r'<b>\1</b>', text, flags=re.DOTALL)
 
-    # 6. Italic: *text* (where * is not part of bold or bullet lists)
+    # 9. Italic: *text* (where * is not part of bold or bullet lists)
     text = re.sub(r'(?<![\*\w])\*([^\*\n]+?)\*(?![\*\w])', r'<i>\1</i>', text)
 
-    # 7. Links: [text](url) -> <a href="url">text</a>
+    # 10. Links: [text](url) -> <a href="url">text</a>
     text = re.sub(r'\[([^\]\n]+)\]\((https?://[^\)\s]+)\)', r'<a href="\2">\1</a>', text)
 
-    # 8. Tag balancing
+    # 11. Tag balancing
     text = balance_html_tags(text)
 
-    # 9. Hard safety limit
+    # 12. Hard safety limit
     if max_length and len(text) > max_length:
         text = text[:max_length - 8]
         text = balance_html_tags(text)
