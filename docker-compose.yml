@@ -152,6 +152,7 @@ services:
     working_dir: /app/services
     command: python3 -u supervisor.py
     environment:
+      - PYTHONPATH=/app:/app/services
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - GEMINI_API_KEY=${GEMINI_API_KEY}
       - ADMIN_CHAT_ID=${ADMIN_CHAT_ID:--1004420587350}
