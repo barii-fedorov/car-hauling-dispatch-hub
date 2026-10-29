@@ -15,7 +15,7 @@ import urllib.request
 import urllib.error
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
+GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key={GEMINI_API_KEY}"
 
 def estimate_mc_age_and_risk(mc_digits: int) -> dict:
     """
@@ -80,12 +80,12 @@ def query_gemini_for_broker_intelligence(query_text: str) -> str:
         return None
 
     prompt = f"""
-Ты — Старший Безопасник и Кредитный Офицер автовозного диспатча («Грузовики на базу»).
-Водитель-автовозник просит проверить брокера:
+Ты — Старший специалист по комплаенсу и проверке брокеров американского автовозного флота.
+Водитель или оунер автовоза просит проверить брокера:
 "{query_text}"
 
-Твоя задача — дать четкую, лаконичную и реалистичную проверку брокера в формате Telegram HTML.
-Используй знание американского автовозного рынка (Central Dispatch, DAT, Truckstop, RTS, OTR, Triumph):
+Твоя задача — дать четкую, строгую и реалистичную проверку брокера в формате Telegram HTML.
+Используй актуальные знания американского автовозного рынка (Central Dispatch, DAT, Truckstop, RTS, OTR, Triumph):
 
 СТРУКТУРА КАРТОЧКИ:
 🏢 <b>[Название Брокера или MC]</b>
@@ -96,17 +96,23 @@ def query_gemini_for_broker_intelligence(query_text: str) -> str:
 • <b>Факторинг:</b> [Одобряется / Требует проверки / В стоп-листе]
 • <b>Риск дабл-брокеринга:</b> [🟢 Минимальный / 🟡 Средний / 🔴 Высокий]
 
-💡 <b>Вердикт для оунера:</b> 2 емких предложения (брать груз / требовать QuickPay / только через факторинг / бежать отсюда).
+💡 <b>Вердикт диспетчера:</b> 2 емких предложения (брать груз / требовать QuickPay / только через проверенный факторинг / отказ).
 
 ПРАВИЛА:
-- Никакой воды, строго факты.
+- Никакой воды, строго реальные факты.
 - Настоящий автовозный сленг (QuickPay, Rate Con, BOL, факторинг, оунер).
 - Оформи красивым Telegram HTML (жирный <b>, курсив <i>, код <code>).
 """
     headers = {"Content-Type": "application/json"}
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.2, "maxOutputTokens": 600}
+        "generationConfig": {
+            "temperature": 0.1,
+            "maxOutputTokens": 2048,
+            "thinkingConfig": {
+                "thinkingBudget": 0
+            }
+        }
     }
     try:
         req = urllib.request.Request(GEMINI_URL, data=json.dumps(payload).encode(), headers=headers)

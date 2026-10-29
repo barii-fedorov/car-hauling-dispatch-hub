@@ -185,119 +185,127 @@ def make_maps_link(query: str, label: str = "Маршрут в Навигато�
     encoded = urllib.parse.quote_plus(query)
     return f'<a href="https://www.google.com/maps/search/?api=1&amp;query={encoded}">🗺️ {label}</a>'
 
-def generate_fallback_fuel_for_geo(geo_info: dict, driver_setup: str = None) -> str:
+def generate_fallback_fuel_for_geo(geo_info: dict, driver_setup: str = None, lat: float = None, lon: float = None) -> str:
     """
-    Dynamic fallback constructed strictly around the real geocoded city and state.
-    NO hardcoded Cheyenne or Nebraska fallback!
+    Dynamic fallback constructed strictly around real geocoded data.
+    Directs driver directly to nearest truck stops on Google Maps via coordinates or verified hub.
+    NO hardcoded Cheyenne or Nebraska fallback, NO fake timestamps or invented cent prices.
     """
     city = geo_info.get("city") or "ближайший хаб"
     state = geo_info.get("state") or geo_info.get("state_code") or "US"
     display = geo_info.get("display_name", f"{city}, {state}")
-
-    now_utc = datetime.now(timezone.utc)
-    est_time = now_utc - timedelta(hours=4)
-    t1 = (est_time - timedelta(minutes=14)).strftime("%H:%M EST (14 мин назад)")
-    t2 = (est_time - timedelta(minutes=28)).strftime("%H:%M EST (28 мин назад)")
-    t3 = (est_time - timedelta(minutes=42)).strftime("%H:%M EST (42 мин назад)")
+    
+    geo_lat = lat or geo_info.get("lat")
+    geo_lon = lon or geo_info.get("lon")
 
     driver_setup = driver_setup or "Стингер 9-кар (Class 8)"
     is_wedge = "виджик" in driver_setup.lower() or "wedge" in driver_setup.lower() or "пикап" in driver_setup.lower()
 
     if is_wedge:
         tip1 = "Внешние RV-колонки, быстрый подъезд без очереди фур."
-        tip2 = "Минимальная цена, следи за выносом хвоста (до 4ft)."
+        tip2 = "Минимальная цена со скидками, следи за выносом хвоста (до 4ft)."
         tip3 = "Высокий навес 14ft+, ровная асфальтированная площадка."
     else:
-        tip1 = "Заезжать строго через Truck Lanes. Навес 15'0\", сателлит на два бака."
-        tip2 = "Минимальная цена. Радиус разворота 75+ футов для стингера."
+        tip1 = "Заезжать строго через грузовые Truck Lanes. Навес 15'0\", сателлит на два бака."
+        tip2 = "Широкий заезд, радиус разворота 75+ футов для 9-кар стингера."
         tip3 = "Прямые выезды без тупых углов, ровный асфальт."
 
-    s1_q = f"Love's Travel Stop {city} {state}"
-    s2_q = f"Pilot Travel Center {city} {state}"
-    s3_q = f"Flying J Travel Plaza {city} {state}"
+    if geo_lat and geo_lon:
+        maps_link_loves = f'<a href="https://www.google.com/maps/search/?api=1&amp;query=Love%27s+Travel+Stop&amp;ll={geo_lat},{geo_lon}">🗺️ Ближайший Love\'s на карте</a>'
+        maps_link_pilot = f'<a href="https://www.google.com/maps/search/?api=1&amp;query=Pilot+Flying+J&amp;ll={geo_lat},{geo_lon}">🗺️ Ближайший Pilot/Flying J</a>'
+        maps_link_ta = f'<a href="https://www.google.com/maps/search/?api=1&amp;query=TA+Petro+Truck+Stop&amp;ll={geo_lat},{geo_lon}">🗺️ Ближайший TA/Petro</a>'
+    else:
+        maps_link_loves = make_maps_link(f"Love's Travel Stop {city} {state}", f"Love's {city}")
+        maps_link_pilot = make_maps_link(f"Pilot Travel Center {city} {state}", f"Pilot {city}")
+        maps_link_ta = make_maps_link(f"TA Petro Truck Stop {city} {state}", f"TA/Petro {city}")
 
     return (
         f"⛽ <b>Дизель под твой сетап:</b> {driver_setup}\n"
         f"📍 <i>{display}</i>\n\n"
-        f"1. 📍 <b>Ближняя:</b> Love's Travel Stop ({city}, {state})\n"
-        f"• 📏 <b>3.8 мили</b> | 💵 <b>$3.59/gal</b> (карта: <b>$3.24</b>) • <i>{t1}</i>\n"
+        f"1. 📍 <b>Сетевой трак-стоп Love's Travel Stop</b> ({city}, {state})\n"
         f"• 🛠️ {tip1}\n"
-        f"• {make_maps_link(s1_q)}\n\n"
-        f"2. 💰 <b>Дешевая:</b> Pilot Travel Center ({city}, {state})\n"
-        f"• 📏 <b>6.2 мили</b> | 💵 <b>$3.47/gal</b> (карта: <b>$3.15</b>) • <i>{t2}</i>\n"
+        f"• {maps_link_loves}\n\n"
+        f"2. 💰 <b>Сетевой трак-стоп Pilot / Flying J</b> ({city}, {state})\n"
         f"• 🛠️ {tip2}\n"
-        f"• {make_maps_link(s2_q)}\n\n"
-        f"3. 🛣️ <b>Оптимальная:</b> Flying J Travel Plaza ({city}, {state})\n"
-        f"• 📏 <b>5.1 мили</b> | 💵 <b>$3.52/gal</b> (карта: <b>$3.19</b>) • <i>{t3}</i>\n"
+        f"• {maps_link_pilot}\n\n"
+        f"3. 🛣️ <b>Сетевой трак-стоп TA / Petro</b> ({city}, {state})\n"
         f"• 🛠️ {tip3}\n"
-        f"• {make_maps_link(s3_q)}\n\n"
-        f"💡 <b>Рекомендация:</b> Сверяй цены в приложении Mudflap / RTS перед съездом с трассы."
+        f"• {maps_link_ta}\n\n"
+        f"💡 <b>Цены и скидки:</b> Актуальный дисконт до цента по топливной карте смотри в Mudflap / RTS перед съездом."
     )
 
-def generate_fuel_recommendations(location_query: str, driver_setup: str = None, cargo: str = None) -> str:
+def generate_fuel_recommendations(location_query: str, driver_setup: str = None, cargo: str = None, lat: float = None, lon: float = None) -> str:
     """
     Main entry point for fuel recommendations.
     Resolves location dynamically (GPS coordinates or any US city/highway name).
+    Uses gemini-3-flash-preview with direct pin coordinates and real addresses.
     """
-    now_utc = datetime.now(timezone.utc)
-    est_time = now_utc - timedelta(hours=4)
-    t1 = (est_time - timedelta(minutes=14)).strftime("%H:%M EST (14 мин назад)")
-    t2 = (est_time - timedelta(minutes=28)).strftime("%H:%M EST (28 мин назад)")
-    t3 = (est_time - timedelta(minutes=42)).strftime("%H:%M EST (42 мин назад)")
-
     driver_setup = driver_setup or "Стингер 9-кар (Class 8)"
     cargo = cargo or "Груженый"
 
-    # 1. Geocode location query dynamically
-    geo = geocode_location_query(location_query)
+    # 1. Geocode location query dynamically if coordinates not directly given
+    geo = None
+    if not (lat and lon):
+        geo = geocode_location_query(location_query)
+        if geo:
+            lat = geo.get("lat")
+            lon = geo.get("lon")
+    else:
+        geo = {"display_name": location_query, "city": "", "state": "", "lat": lat, "lon": lon}
+
     resolved_loc_str = geo.get("display_name") if geo else location_query
     city_st = f"{geo.get('city', '')}, {geo.get('state', '')}".strip(", ") if geo else location_query
+    gps_str = f" (Точные GPS координаты: {lat:.5f}, {lon:.5f})" if (lat and lon) else ""
 
     prompt = f"""
 Ты — ночной американский диспетчер автовозного флота.
-Водитель автовоза ищет дизель. Локация: {resolved_loc_str} (Регион: {city_st}).
+Водитель автовоза ищет дизель. Локация: {resolved_loc_str}{gps_str} (Регион: {city_st}).
 - СЕТАП: {driver_setup}
 - ГРУЗ: {cargo}
 
-Найди 3 РЕАЛЬНЫХ конкретных трак-стопа возле этой точки ({city_st}) вдоль главных Interstate магистралей:
-- 1 ближайший трак-стоп
-- 1 самый дешевый (со скидками Mudflap/RTS)
-- 1 оптимальный для автовоза (удобный радиус, прямой выезд, высокий навес 14'6"+)
+СТРОГИЕ ТРЕБОВАНИЯ К ДАННЫМ (СЕРЬЕЗНЫЙ ПРОДУКТ ДЛЯ ВОДИТЕЛЕЙ, БЕЗ ФЕЙКОВ):
+1. Называй ТОЛЬКО РЕАЛЬНО СУЩЕСТВУЮЩИЕ трак-стопы вдоль Interstate магистралей рядом с этой точкой ({city_st}).
+2. Для каждого трак-стопа укажи:
+   - Сеть и номер (Love's, Pilot, TA/Petro, Flying J, Maverik или крупный независимый трак-стоп)
+   - Трассу и точный номер Exit (например: I-5 Exit 199 или I-10 Exit 174)
+   - Реальный полный уличный адрес (например: 174 Longview Dr, Midway, FL 32343)
+3. Google Maps ссылку делай СТРОГО на точный адрес (со знаком + вместо пробелов), чтобы навигатор открывал прямой PIN карточки объекта, а не список:
+   <a href="https://www.google.com/maps/search/?api=1&amp;query=[Точный+Адрес+с+Плюсами]">🗺️ Маршрут в Навигатор (Exit [XXX])</a>
+4. НИКАКИХ вымышленных ценников до цента и фейковых таймстампов («проверено 14 мин назад»).
+   Укажи официальный средний диапазон цен на дизель по этому штату/коридору и напомни, что точный дисконт до цента по топливной карте нужно смотреть в Mudflap / RTS перед съездом.
 
 ФОРМАТ СТРОГО:
 ⛽ <b>Дизель под твой сетап:</b> {driver_setup}
 📍 <i>{resolved_loc_str}</i>
 
-1. 📍 <b>Ближняя:</b> [Название сети и #] (I-[XX] Exit [XXX], [Город, Штат])
-• 📍 Адрес: [Реальный точный уличный адрес, например: 92053 Coburg Rd, Eugene, OR 97408]
-• 📏 <b>[X.X] мили</b> | 💵 <b>$[X.XX]/gal</b> (карта: <b>$[X.XX]</b>) • <i>{t1}</i>
-• 🛠️ [1 короткий совет по заезду/колонке для {driver_setup}]
-• 🗺️ <a href="https://www.google.com/maps/search/?api=1&amp;query=[Точный+Адрес+с+Плюсами]">Маршрут в Навигатор</a>
+1. 📍 <b>Ближний:</b> [Название сети и #] (I-[XX] Exit [XXX], [Город, Штат])
+• 📍 Адрес: [Реальный уличный адрес]
+• 🛠️ [Короткий совет по заезду/навесу для {driver_setup}]
+• 🗺️ <a href="https://www.google.com/maps/search/?api=1&amp;query=[Точный+Адрес+с+Плюсами]">Маршрут в Навигатор (Exit [XXX])</a>
 
-2. 💰 <b>Дешевая:</b> [Название сети и #] (I-[XX] Exit [XXX], [Город, Штат])
-• 📍 Адрес: [Реальный точный уличный адрес]
-• 📏 <b>[X.X] миль</b> | 💵 <b>$[X.XX]/gal</b> (карта: <b>$[X.XX]</b>) • <i>{t2}</i>
-• 🛠️ [1 короткий совет по площадке]
-• 🗺️ <a href="https://www.google.com/maps/search/?api=1&amp;query=[Точный+Адрес+с+Плюсами]">Маршрут в Навигатор</a>
+2. 💰 <b>Дешевый (со скидками Mudflap/RTS):</b> [Название сети и #] (I-[XX] Exit [XXX], [Город, Штат])
+• 📍 Адрес: [Реальный уличный адрес]
+• 🛠️ [Короткий совет по заезду/площадке]
+• 🗺️ <a href="https://www.google.com/maps/search/?api=1&amp;query=[Точный+Адрес+с+Плюсами]">Маршрут в Навигатор (Exit [XXX])</a>
 
-3. 🛣️ <b>Оптимальная:</b> [Название сети и #] (I-[XX] Exit [XXX], [Город, Штат])
-• 📍 Адрес: [Реальный точный уличный адрес]
-• 📏 <b>[X.X] миль</b> | 💵 <b>$[X.XX]/gal</b> (карта: <b>$[X.XX]</b>) • <i>{t3}</i>
-• 🛠️ [1 короткий совет по выезду]
-• 🗺️ <a href="https://www.google.com/maps/search/?api=1&amp;query=[Точный+Адрес+с+Плюсами]">Маршрут в Навигатор</a>
+3. 🛣️ <b>Оптимальный для автовоза:</b> [Название сети и #] (I-[XX] Exit [XXX], [Город, Штат])
+• 📍 Адрес: [Реальный уличный адрес]
+• 🛠️ [Короткий совет по выезду/парковке]
+• 🗺️ <a href="https://www.google.com/maps/search/?api=1&amp;query=[Точный+Адрес+с+Плюсами]">Маршрут в Навигатор (Exit [XXX])</a>
 
-💡 <b>IFTA и Цены:</b> [1 строка: реальная ставка IFTA штата, средняя цена по региону. Точный дисконт до цента сверяй в Mudflap/RTS перед съездом].
-
-ТРЕБОВАНИЯ:
-- НИКАКИХ приветствий и вступлений («Привет оунер», «Совет на связи»). Начинай СРАЗУ со знака ⛽ <b>Дизель...</b>.
-- Ссылки на карты делай строго по реальному ТОЧНОМУ уличному адресу трак-стопа со знаком +, чтобы навигатор открывал конкретную точку на карте, а не список поиска!
-- Называй только реально существующие трак-стопы в этом штате!
+💡 <b>Ориентир цен и IFTA:</b> [Реальная ставка IFTA штата, средний диапазон цен по региону. Точный дисконт до цента по топливной карте смотри в Mudflap / RTS].
 """
     if GEMINI_KEY:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key={GEMINI_KEY}"
         payload = {
             "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-            "generationConfig": {"temperature": 0.2, "maxOutputTokens": 800}
+            "generationConfig": {
+                "temperature": 0.1,
+                "maxOutputTokens": 2048,
+                "thinkingConfig": {
+                    "thinkingBudget": 0
+                }
+            }
         }
         req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers={"Content-Type": "application/json"})
         try:
@@ -314,4 +322,4 @@ def generate_fuel_recommendations(location_query: str, driver_setup: str = None,
             print(f"[WARN] Gemini fuel call failed ({e}), using dynamic geo fallback...")
 
     # Dynamic fallback based on real resolved entity
-    return generate_fallback_fuel_for_geo(geo, driver_setup)
+    return generate_fallback_fuel_for_geo(geo, driver_setup, lat=lat, lon=lon)

@@ -161,7 +161,13 @@ def ask_gemini_direct(prompt):
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key={GEMINI_KEY}"
     payload = {
         "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.2, "maxOutputTokens": 800}
+        "generationConfig": {
+            "temperature": 0.2,
+            "maxOutputTokens": 2048,
+            "thinkingConfig": {
+                "thinkingBudget": 0
+            }
+        }
     }
     req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers={"Content-Type": "application/json"})
     try:
@@ -237,7 +243,10 @@ def ask_gemini(user_message, chat_id=None):
         "contents": sanitized_contents,
         "generationConfig": {
             "temperature": 0.2,
-            "maxOutputTokens": 800
+            "maxOutputTokens": 2048,
+            "thinkingConfig": {
+                "thinkingBudget": 0
+            }
         }
     }
     req = urllib.request.Request(
@@ -256,10 +265,10 @@ def ask_gemini(user_message, chat_id=None):
                     if chat_id and answer_text:
                         record_chat_turn(chat_id, "model", answer_text)
                     return answer_text
-            return "Связь восстановилась. Уточни вопрос, сейчас отвечу."
+            return "Принял. Уточни запрос (город, штат, номер трассы или MC брокера) — выдам точные данные."
     except Exception as e:
         print(f"[ERROR] Gemini API error: {e}")
-        return "Секунду, был сбой связи с сервером. Повтори вопрос."
+        return "Диспетчер на связи. Уточни локацию, MC брокера или технический вопрос — проверяю данные."
 
 def process_message(msg):
     chat = msg.get("chat", {})
@@ -531,10 +540,10 @@ def process_message(msg):
             set_driver_session(chat_id, state="idle")
             # Falls through to general dispatcher ask_gemini with full multi-turn CHAT_MEMORY
         else:
+            lat = location.get("latitude") if location else None
+            lon = location.get("longitude") if location else None
             loc_str = loc_str_quick or session.get("last_query") or text
-            if location and not loc_str_quick:
-                lat = location.get("latitude")
-                lon = location.get("longitude")
+            if location and not loc_str_quick and lat and lon:
                 loc_str = reverse_geocode(lat, lon)
 
             setup, cargo = extract_setup_and_cargo(text)
@@ -546,7 +555,7 @@ def process_message(msg):
             ack_msg_id = ack_msg.get("result", {}).get("message_id") if ack_msg else None
 
             send_chat_action(chat_id, "find_location")
-            fuel_answer = generate_fuel_recommendations(loc_str, driver_setup=driver_setup, cargo=cargo_type)
+            fuel_answer = generate_fuel_recommendations(loc_str, driver_setup=driver_setup, cargo=cargo_type, lat=lat, lon=lon)
             set_driver_session(chat_id, state="idle", driver_setup=driver_setup, cargo_type=cargo_type)
             record_chat_turn(chat_id, "model", fuel_answer)
 

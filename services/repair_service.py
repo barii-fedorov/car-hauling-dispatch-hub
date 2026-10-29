@@ -91,10 +91,11 @@ def find_mechanics(lat=None, lon=None, state=None, query_text="", limit=3):
         return []
 
     # Filtering logic
-    # 1. By distance if coords present
+    # 1. By distance if coords present (strictly within coverage radius or max 100 miles)
     if lat is not None and lon is not None:
-        results.sort(key=lambda x: x["distance_miles"])
-        return results[:limit]
+        nearby = [m for m in results if m["distance_miles"] <= max(m.get("radius", 90), 100)]
+        nearby.sort(key=lambda x: x["distance_miles"])
+        return nearby[:limit]
 
     # 2. By State if provided
     if state:
@@ -123,30 +124,34 @@ def find_mechanics(lat=None, lon=None, state=None, query_text="", limit=3):
         matched.sort(key=lambda x: x[0], reverse=True)
         return [item[1] for item in matched[:limit]]
 
-    # Default: highest trust score
-    results.sort(key=lambda x: x["trust_score"], reverse=True)
-    return results[:limit]
+    # Default: return empty so we do not show distant mechanics across the country
+    return []
 
 def format_mechanics_response(mechanics: list, user_location_str: str = None) -> str:
     """
-    Renders structured Telegram HTML card with phone numbers, specialties, cash status, and trust ratings.
+    Renders structured Telegram HTML card with real verified phone numbers, specialties, and cash status.
     """
     if not mechanics:
+        loc_txt = f"в радиусе 100 миль от 📍 <b>{user_location_str}</b>" if user_location_str else "в данном регионе"
         return (
-            "🔧 <b>БАЗА СВОИХ МАСТЕРОВ (КЭШ / БЕЗ РЕПОРТОВ):</b>\n\n"
-            "В твоем текущем секторе пока нет проверенных стационарных боксов Совета. "
-            "Но наши мастера выезжают по ключевым коридорам (I-80, I-10, I-95, I-75, I-35).\n\n"
-            "💡 <b>Совет при вызове дорожного ремонта на трассе:</b>\n"
-            "1. Никогда не соглашайся на официальный вызов от дилера (Freightliner/Peterbilt/Volvo), если есть риск замечания по CSA.\n"
-            "2. Договаривайся с выездным мастером ДО начала работ: оплата строго Cash/Zelle, никакой фиксации в базах FMCSA/DOT.\n"
-            "3. Уточни наличие нужных фитингов (для автовозов — резьба JIC 37° или ORFS) перед выездом технички!"
+            f"🔧 <b>РЕМОНТ И ТЕХПОМОЩЬ НА ТРАССЕ:</b>\n\n"
+            f"В базе {loc_txt} проверенных частных русскоязычных мастеров сейчас нет.\n\n"
+            f"🚨 <b>Официальные круглосуточные 24/7 службы дорожной помощи для коммерческих траков:</b>\n"
+            f"• 📞 <b>Love's Truck Care Roadside:</b> <a href=\"tel:18006875683\">1-800-687-5683</a> (1-800-OUR-LOVE)\n"
+            f"• 📞 <b>TA Truck Service Commercial Roadside:</b> <a href=\"tel:18008248762\">1-800-824-8762</a>\n"
+            f"• 📞 <b>Rush Truck Centers Mobile Tech:</b> <a href=\"tel:18557874327\">1-855-787-4327</a>\n"
+            f"• 📞 <b>Bridgestone Emergency Fleet Support:</b> <a href=\"tel:18005600099\">1-800-560-0099</a>\n\n"
+            f"💡 <b>Рекомендации диспетчера при заказе выезда:</b>\n"
+            f"1. Сразу уточняй: <i>'Specialized car hauler / stinger on highway shoulder'</i> и точный характер проблемы (гидравлика/шланг, регенерация DPF, тормоза, воздух).\n"
+            f"2. Согласуй фиксированную стоимость выезда (road call fee + почасовая ставка) до отправки мастера на точку.\n"
+            f"3. Для поиска частного мастера через закрытую партнерскую сеть напиши запрос в диспетчерский чат."
         )
 
-    loc_header = f"в районе 📍 <b>{user_location_str}</b>" if user_location_str else "по ключевым автовозным коридорам"
+    loc_header = f"в районе 📍 <b>{user_location_str}</b>" if user_location_str else "по твоему направлению"
 
     lines = [
         f"🔧 <b>ПРОВЕРЕННЫЕ РУССКОЯЗЫЧНЫЕ МАСТЕРА ({loc_header}):</b>\n",
-        "<i>Строго свои: оплата Cash / Zelle, ремонт без репортов в DOT и без страховых клеймов.</i>\n"
+        "<i>Оплата Cash / Zelle, ремонт без репортов в DOT и без страховых клеймов.</i>\n"
     ]
 
     for idx, m in enumerate(mechanics, 1):
@@ -159,14 +164,13 @@ def format_mechanics_response(mechanics: list, user_location_str: str = None) ->
             f"<b>{idx}. 🛠️ {m['name']}</b>\n"
             f"{dist_str}"
             f"• 📞 <b>Прямой контакт:</b> <a href=\"tel:{phone_clean}\">{m['contact_phone']}</a> (Язык: {m['languages']})\n"
-            f"• 💵 <b>Оплата:</b> <b>{pay}</b> (Никаких отметок в DOT)\n"
-            f"• 🛡️ <b>Доверие:</b> {m['trust_level']} — {m['trust_score']}/5.0 ({m['reviews_count']} ремонтов)\n"
+            f"• 💵 <b>Оплата:</b> <b>{pay}</b> (Без отметок в базах DOT)\n"
             f"• ⚙️ <b>Профиль:</b> {specs}\n"
             f"• 💬 <i>{m['notes']}</i>\n"
         )
 
     lines.append(
-        "💡 <b>Памятка оунеру:</b> При звонке скажи, что ты из <i>«Совета Диспетчеров / Грузовики на базу»</i> — мастер сразу поймет специфику автовоза и сделает приоритетный выезд."
+        "💡 <b>Памятка:</b> Звони напрямую мастеру, уточняй модель автовоза (Cottrell, Boydstun, Kaufman, Infinity) и нужные фитинги перед выездом."
     )
 
     return "\n".join(lines)
