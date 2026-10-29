@@ -8,6 +8,11 @@ import sys
 
 def main():
     print("[SUPERVISOR] Starting autonomous Car Hauler Dispatch Services...")
+    try:
+        import psycopg2
+    except ImportError:
+        print("[SUPERVISOR] Installing psycopg2-binary...")
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "psycopg2-binary"])
     bot_proc = subprocess.Popen([sys.executable, "-u", "telegram_bot_daemon.py"])
     news_proc = subprocess.Popen([sys.executable, "-u", "news_and_alerts_engine.py", "--daemon"])
 
