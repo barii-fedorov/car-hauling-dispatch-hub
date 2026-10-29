@@ -346,6 +346,29 @@ def test_telegram_keyboard():
     except Exception as e:
         record("Driver Keyboard", "Module Execution", "FAIL", str(e))
 
+# ==========================================
+# TEST 14: HERE API & Quota Circuit Breaker
+# ==========================================
+def test_here_api_and_circuit_breaker():
+    try:
+        from here_fuel_service import search_here_fuel_stations, get_here_quota_stats, HERE_MONTHLY_LIMIT
+        
+        # Test 1: Real station search via user's key
+        stations = search_here_fuel_stations(38.5816, -121.4944, state_code="CA")
+        has_stations = len(stations) > 0
+        has_address = any(s.get("address") for s in stations) if stations else False
+        
+        # Test 2: Quota stats & circuit breaker limit
+        stats = get_here_quota_stats()
+        limit_valid = stats.get("limit") == 245000 and stats.get("remaining") <= 245000
+        
+        if has_stations and has_address and limit_valid:
+            record("HERE API", "Live Pricing & 245k Hard Stop", "PASS", f"Found {len(stations)} stations, limit 245,000 active, {stats['remaining']} remaining")
+        else:
+            record("HERE API", "Live Pricing & 245k Hard Stop", "FAIL", f"Stations: {len(stations)}, stats: {stats}")
+    except Exception as e:
+        record("HERE API", "Module Execution", "FAIL", str(e))
+
 def run_all():
     print("="*60)
     print("STARTING CAR HAULING DISPATCH HUB FULL SYSTEM AUDIT")
@@ -363,6 +386,7 @@ def run_all():
     test_model_router()
     test_news_frequency()
     test_telegram_keyboard()
+    test_here_api_and_circuit_breaker()
     print("="*60)
     
     passed = sum(1 for t in test_results if t["status"] == "PASS")

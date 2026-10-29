@@ -120,6 +120,37 @@ class ModelMetricsTracker:
         lines.append("# TYPE gemini_model_switches_total counter")
         lines.append(f"gemini_model_switches_total {self.model_switches_total}")
 
+        # HERE Technologies API Quota & Circuit Breaker Tracking
+        try:
+            try:
+                from services.here_fuel_service import get_here_quota_stats, HERE_MONTHLY_LIMIT
+            except ImportError:
+                from here_fuel_service import get_here_quota_stats, HERE_MONTHLY_LIMIT
+            hq = get_here_quota_stats()
+            lines.append("\n# HELP here_api_requests_total Total HERE Fuel API requests made")
+            lines.append("# TYPE here_api_requests_total counter")
+            lines.append(f'here_api_requests_total{{status="200"}} {hq.get("total_success", 0)}')
+            lines.append(f'here_api_requests_total{{status="error"}} {hq.get("total_errors", 0)}')
+
+            lines.append("\n# HELP here_api_monthly_usage Current month requests against free tier")
+            lines.append("# TYPE here_api_monthly_usage gauge")
+            lines.append(f'here_api_monthly_usage {hq.get("monthly_count", 0)}')
+
+            lines.append("\n# HELP here_api_free_tier_limit Hard stop limit before exceeding free tier")
+            lines.append("# TYPE here_api_free_tier_limit gauge")
+            lines.append(f'here_api_free_tier_limit {HERE_MONTHLY_LIMIT}')
+
+            lines.append("\n# HELP here_api_quota_remaining Remaining requests in current billing month")
+            lines.append("# TYPE here_api_quota_remaining gauge")
+            lines.append(f'here_api_quota_remaining {hq.get("remaining", HERE_MONTHLY_LIMIT)}')
+
+            lines.append("\n# HELP here_api_circuit_breaker_active 1 if hard stop limit is reached")
+            lines.append("# TYPE here_api_circuit_breaker_active gauge")
+            cb_val = 1 if hq.get("circuit_breaker_active") else 0
+            lines.append(f'here_api_circuit_breaker_active {cb_val}')
+        except Exception as e:
+            pass
+
         return "\n".join(lines) + "\n"
 
 # Global tracker instance

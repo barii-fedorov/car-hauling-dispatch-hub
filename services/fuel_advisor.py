@@ -189,9 +189,9 @@ def make_maps_link(query: str, label: str = "Маршрут в Навигато�
     encoded = urllib.parse.quote_plus(query)
     return f'<a href="https://www.google.com/maps/search/?api=1&amp;query={encoded}">🗺️ {label}</a>'
 
-def generate_fallback_fuel_for_geo(geo_info: dict, driver_setup: str = None, lat: float = None, lon: float = None) -> str:
+def generate_fallback_fuel_for_geo(geo_info: dict, driver_setup: str = None, lat: float = None, lon: float = None, here_stations: list = None) -> str:
     """
-    Dynamic fallback constructed strictly around real geocoded data.
+    Dynamic fallback constructed strictly around real geocoded data and HERE Fuel API stations.
     Directs driver directly to nearest truck stops on Google Maps via coordinates or verified hub.
     NO hardcoded Cheyenne or Nebraska fallback, NO fake timestamps or invented cent prices.
     """
@@ -213,6 +213,30 @@ def generate_fallback_fuel_for_geo(geo_info: dict, driver_setup: str = None, lat
         tip1 = "Заезжать строго через грузовые Truck Lanes. Навес 15'0\", сателлит на два бака."
         tip2 = "Широкий заезд, радиус разворота 75+ футов для 9-кар стингера."
         tip3 = "Прямые выезды без тупых углов, ровный асфальт."
+
+    # If real HERE API stations are available, format them directly with live pump prices
+    if here_stations and len(here_stations) >= 1:
+        lines = [
+            f"⛽ <b>Дизель под твой сетап:</b> {driver_setup}",
+            f"📍 <i>{display}</i>\n"
+        ]
+        labels = ["Ближний трак-стоп", "Выгодная цена (по карте)", "Оптимальный заезд для автовоза"]
+        for idx, stn in enumerate(here_stations[:3]):
+            lbl = labels[idx] if idx < len(labels) else f"Трак-стоп #{idx+1}"
+            price_str = f"• 💵 <b>Дизель на колонке:</b> ${stn['diesel_price']:.2f}/gal (HERE Live)\n" if stn.get("diesel_price") else ""
+            addr = stn.get("address") or f"{city}, {state}"
+            maps_query = urllib.parse.quote_plus(f"{stn['name']} {addr}")
+            nav_link = f'<a href="https://www.google.com/maps/search/?api=1&amp;query={maps_query}">🗺️ Маршрут в Навигатор ({stn["name"][:20]})</a>'
+
+            lines.append(
+                f"{idx+1}. 📍 <b>{lbl}: {stn['name']}</b>\n"
+                f"• 📍 Адрес: {addr}\n"
+                f"{price_str}"
+                f"• 🛠️ {tip1 if idx==0 else (tip2 if idx==1 else tip3)}\n"
+                f"• {nav_link}\n"
+            )
+        lines.append("💡 <b>Цены и скидки:</b> Актуальный дисконт до цента по топливной карте смотри в Mudflap / RTS перед съездом.")
+        return "\n".join(lines)
 
     if geo_lat and geo_lon:
         maps_link_loves = f'<a href="https://www.google.com/maps/search/?api=1&amp;query=Love%27s+Travel+Stop&amp;ll={geo_lat},{geo_lon}">🗺️ Маршрут в Навигатор (Love\'s)</a>'
@@ -273,12 +297,27 @@ def generate_fuel_recommendations(location_query: str, driver_setup: str = None,
     state_range_high = bench["range_high"]
     state_name = bench["name"]
 
+    # 2. Query live HERE Technologies Fuel Prices API if coordinates and quota available
+    here_stations = []
+    here_context = ""
+    if lat and lon and is_here_api_available():
+        try:
+            here_stations = search_here_fuel_stations(lat, lon, state_code=bench["code"])
+            if here_stations:
+                here_context = "\nРЕАЛЬНЫЕ СТАНЦИИ ИЗ HERE FUEL API (ТОЧНЫЕ АДРЕСА И ЦЕНЫ НА КОЛОНКЕ):\n"
+                for idx, s in enumerate(here_stations[:3], 1):
+                    pr_info = f", текущая цена на колонке: ${s['diesel_price']:.2f}/gal" if s.get("diesel_price") else ""
+                    here_context += f"{idx}. {s['name']} — Адрес: {s['address']}{pr_info}\n"
+                here_context += "Используй строго эти проверенные станции, их реальные адреса и цены в ответе!\n"
+        except Exception as e:
+            print(f"[WARN] Error calling search_here_fuel_stations: {e}")
+
     prompt = f"""
 Ты — ночной американский диспетчер автовозного флота.
 Водитель автовоза ищет дизель. Локация: {resolved_loc_str}{gps_str} (Регион: {city_st}).
 - СЕТАП: {driver_setup}
 - ГРУЗ: {cargo}
-
+{here_context}
 АКТУАЛЬНЫЕ СЕРТИФИЦИРОВАННЫЕ ДАННЫЕ AAA ПО ШТАТУ ({state_name}):
 - Средняя розничная цена на дизель на сегодня: ${state_diesel_avg:.2f}/gal
 - Реалистичный диапазон цен вдоль Interstate коридора: ${state_range_low:.2f} – ${state_range_high:.2f}/gal
@@ -352,5 +391,5 @@ def generate_fuel_recommendations(location_query: str, driver_setup: str = None,
                 break
 
     # Dynamic fallback based on real resolved entity + verified sense check
-    fallback_res = generate_fallback_fuel_for_geo(geo, driver_setup, lat=lat, lon=lon)
+    fallback_res = generate_fallback_fuel_for_geo(geo, driver_setup, lat=lat, lon=lon, here_stations=here_stations)
     return multi_agent_sense_check(fallback_res, context_type="fuel", location_str=resolved_loc_str, state_code=bench["code"])
