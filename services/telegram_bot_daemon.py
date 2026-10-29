@@ -95,7 +95,7 @@ def send_telegram_message(chat_id, text, reply_to_message_id=None):
         print(f"[ERROR] Failed to send message: {e}")
 
 def ask_gemini(user_message):
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key={GEMINI_KEY}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key={GEMINI_KEY}"
     payload = {
         "contents": [
             {

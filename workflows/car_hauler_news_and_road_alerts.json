@@ -1,0 +1,160 @@
+{
+  "name": "Car Hauler News & Road Alerts Dispatcher",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 14,19 * * 1-5"
+            }
+          ]
+        }
+      },
+      "id": "e7284b11-5d9c-48be-8f4d-17684092b321",
+      "name": "US Working Hours News Trigger (9:00 AM & 2:30 PM EST)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        220,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 20
+            }
+          ]
+        }
+      },
+      "id": "c53018fa-3d44-42b4-82a1-fa4cf941a877",
+      "name": "Fast Road & DOT Alerts Trigger (Every 20 Min)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        220,
+        480
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "a90b4d1c-1f48-433e-b819-ea0370487192",
+      "name": "Manual Test Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        220,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "command": "python3 /app/services/news_and_alerts_engine.py --news"
+      },
+      "id": "9742a7b1-2138-4ee0-8801-4475143a531b",
+      "name": "Run News Pipeline (CDLLife / FreightWaves / Photos)",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        520,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "command": "python3 /app/services/news_and_alerts_engine.py --alerts"
+      },
+      "id": "841804b9-38b3-4f9e-be41-0373e3a47942",
+      "name": "Run Road Alerts Pipeline (Incidents & Checkpoints)",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        520,
+        480
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $env.ADMIN_CHAT_ID || '-1004420587350' }}",
+        "text": "={{ '🟢 **[n8n Status]** News workflow executed successfully:\n\n' + $json.stdout }}",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "id": "4b6845c2-f19b-4e89-a991-5f284e272b14",
+      "name": "Notify Admin Cabinet",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        780,
+        360
+      ]
+    }
+  ],
+  "connections": {
+    "US Working Hours News Trigger (9:00 AM & 2:30 PM EST)": {
+      "main": [
+        [
+          {
+            "node": "Run News Pipeline (CDLLife / FreightWaves / Photos)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Manual Test Trigger": {
+      "main": [
+        [
+          {
+            "node": "Run News Pipeline (CDLLife / FreightWaves / Photos)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fast Road & DOT Alerts Trigger (Every 20 Min)": {
+      "main": [
+        [
+          {
+            "node": "Run Road Alerts Pipeline (Incidents & Checkpoints)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run News Pipeline (CDLLife / FreightWaves / Photos)": {
+      "main": [
+        [
+          {
+            "node": "Notify Admin Cabinet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run Road Alerts Pipeline (Incidents & Checkpoints)": {
+      "main": [
+        [
+          {
+            "node": "Notify Admin Cabinet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

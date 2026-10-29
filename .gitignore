@@ -6,6 +6,7 @@
 
 # Application Data & Docker volumes
 data/
+*.db
 telethon_bot/sessions/
 __pycache__/
 *.py[cod]
