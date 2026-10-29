@@ -124,6 +124,40 @@ def send_telegram_message(chat_id, text, reply_to_message_id=None, message_threa
         print(f"[ERROR] Failed to send message: {e}")
     return None
 
+def edit_telegram_message(chat_id, message_id, text, reply_markup=None):
+    html_text = markdown_to_telegram_html(text)
+    payload = {
+        "chat_id": chat_id,
+        "message_id": message_id,
+        "text": html_text,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True
+    }
+    if reply_markup is not None:
+        payload["reply_markup"] = reply_markup
+    url = f"{API_URL}/editMessageText"
+    try:
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"}
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return json.loads(resp.read().decode())
+    except urllib.error.HTTPError as he:
+        try:
+            print(f"[WARN] HTML editMessageText failed ({he}), falling back to stripped text...")
+            payload["text"] = strip_html_tags(html_text)
+            payload.pop("parse_mode", None)
+            req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                return json.loads(resp.read().decode())
+        except Exception as ex:
+            print(f"[ERROR] Failed to edit fallback message: {ex}")
+    except Exception as e:
+        print(f"[ERROR] Failed to edit message: {e}")
+    return None
+
 def ask_gemini_direct(prompt):
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key={GEMINI_KEY}"
     payload = {
@@ -333,10 +367,21 @@ def process_message(msg):
         driver_setup = setup or session.get("driver_setup") or "Стингер 9-кар (Class 8)"
         cargo_type = cargo or session.get("cargo_type") or "Груженый 7-8 авто"
 
+        # Immediate fast status message as requested by user
+        ack_text = "⏳ <b>Принял точку!</b> Сканирую трассу и проверяю актуальные цены на солярку под твой сетап... Это может занять около минуты."
+        ack_msg = send_telegram_message(chat_id, ack_text, reply_to_message_id=msg_id)
+        ack_msg_id = ack_msg.get("result", {}).get("message_id") if ack_msg else None
+
         send_chat_action(chat_id, "typing")
         fuel_answer = generate_fuel_recommendations(loc_str, driver_setup=driver_setup, cargo=cargo_type)
         set_driver_session(chat_id, state="idle", driver_setup=driver_setup, cargo_type=cargo_type)
-        send_telegram_message(chat_id, fuel_answer, reply_to_message_id=msg_id)
+
+        if ack_msg_id:
+            res = edit_telegram_message(chat_id, ack_msg_id, fuel_answer)
+            if not res or not res.get("ok"):
+                send_telegram_message(chat_id, fuel_answer, reply_to_message_id=msg_id)
+        else:
+            send_telegram_message(chat_id, fuel_answer, reply_to_message_id=msg_id)
         return
 
     # B. Did driver ask about fuel / diesel / gas station?
@@ -346,14 +391,25 @@ def process_message(msg):
             "i-80", "i-70", "i-95", "i-10", "i-40", "i-35", "i-15", "i-20", "i-65", "i-75",
             "exit", "выход", "шайенн", "cheyenne", "даллас", "dallas", "чикаго", "chicago",
             "денвер", "denver", "техас", "texas", "вайоминг", "wyoming", "колорадо", "colorado",
+            "флорида", "florida", "майами", "miami", "орландо", "orlando", "атланта", "atlanta",
             "возле", "рядом", "в районе", "state"
         ])
         
         if setup and has_specific_location:
+            ack_text = "⏳ <b>Секунду!</b> Пробиваю заправки и цены на дизель по маршруту... Это может занять около минуты."
+            ack_msg = send_telegram_message(chat_id, ack_text, reply_to_message_id=msg_id)
+            ack_msg_id = ack_msg.get("result", {}).get("message_id") if ack_msg else None
+
             send_chat_action(chat_id, "typing")
             fuel_answer = generate_fuel_recommendations(text, driver_setup=setup, cargo=cargo)
             set_driver_session(chat_id, state="idle", driver_setup=setup, cargo_type=cargo)
-            send_telegram_message(chat_id, fuel_answer, reply_to_message_id=msg_id)
+
+            if ack_msg_id:
+                res = edit_telegram_message(chat_id, ack_msg_id, fuel_answer)
+                if not res or not res.get("ok"):
+                    send_telegram_message(chat_id, fuel_answer, reply_to_message_id=msg_id)
+            else:
+                send_telegram_message(chat_id, fuel_answer, reply_to_message_id=msg_id)
             return
 
         # Ask in 1-3 lines for setup, cargo, and location pin
