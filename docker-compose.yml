@@ -141,6 +141,26 @@ services:
     depends_on:
       - n8n
 
+  # 9. AI Dispatcher Telegram Bot (@CarHaulerSOS_bot)
+  telegram_bot:
+    image: python:3.11-slim
+    container_name: dispatch_bot
+    restart: unless-stopped
+    volumes:
+      - ./services:/app/services
+      - ./config.json:/app/config.json:ro
+    working_dir: /app/services
+    command: python3 -u telegram_bot_daemon.py
+    environment:
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - ADMIN_CHAT_ID=${ADMIN_CHAT_ID:--1004420587350}
+    networks:
+      - dispatch_net
+    depends_on:
+      - postgres
+      - qdrant
+
 networks:
   dispatch_net:
     driver: bridge

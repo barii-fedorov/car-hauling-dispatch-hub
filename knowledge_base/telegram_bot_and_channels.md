@@ -14,7 +14,7 @@ notebook_id: "e493af15-d51c-414f-aca9-484bb99fc356"
 
 - **Bot Username:** [@CarHaulerSOS_bot](https://t.me/CarHaulerSOS_bot)
 - **Назначение:** Первичная обработка обращений водителей и оунер-операторов, экстренная помощь на дорогах (SOS / Dry Run / Detention), сбор первичной информации для диспетчерской службы.
-- **API Token:** `9152194119:AAG8pEBzYjWfESxabI-XsqvarM5Tv1PiO2w`
+- **API Token:** Securely managed via server `.env` variable (`TELEGRAM_BOT_TOKEN`, Bot ID: `9152194119`)
 - **Документация Bot API:** [https://core.telegram.org/bots/api](https://core.telegram.org/bots/api)
 
 > [!CAUTION]
