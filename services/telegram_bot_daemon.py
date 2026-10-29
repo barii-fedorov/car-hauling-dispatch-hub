@@ -262,6 +262,12 @@ def ask_gemini(user_message, chat_id=None):
                 parts = candidates[0].get("content", {}).get("parts", [])
                 if parts:
                     answer_text = parts[0].get("text", "")
+                    if answer_text:
+                        try:
+                            from services.grounding_verifier import multi_agent_sense_check
+                            answer_text = multi_agent_sense_check(answer_text, context_type="general")
+                        except Exception:
+                            pass
                     if chat_id and answer_text:
                         record_chat_turn(chat_id, "model", answer_text)
                     return answer_text
@@ -849,6 +855,12 @@ def run_bot():
     print(f"[START] Starting Telegram Bot Daemon for @CarHaulerSOS_bot...")
     setup_telegram_commands()
     init_fuel_session_db()
+    try:
+        from services.aaa_fuel_feed import init_state_fuel_table, sync_state_fuel_prices
+        init_state_fuel_table()
+        sync_state_fuel_prices()
+    except Exception as ex:
+        print(f"[WARN] Initial AAA fuel sync error: {ex}")
     offset = 0
     while True:
         try:

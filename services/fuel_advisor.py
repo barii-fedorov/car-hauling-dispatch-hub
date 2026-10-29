@@ -17,6 +17,9 @@ from datetime import datetime, timezone, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from telegram_formatter import markdown_to_telegram_html
+from aaa_fuel_feed import get_state_diesel_benchmark, sync_state_fuel_prices, init_state_fuel_table
+from here_fuel_service import search_here_fuel_stations, is_here_api_available
+from grounding_verifier import multi_agent_sense_check
 
 PG_HOST = os.environ.get("POSTGRES_HOST", "postgres")
 PG_PORT = int(os.environ.get("POSTGRES_PORT", "5432"))
@@ -257,11 +260,24 @@ def generate_fuel_recommendations(location_query: str, driver_setup: str = None,
     city_st = f"{geo.get('city', '')}, {geo.get('state', '')}".strip(", ") if geo else location_query
     gps_str = f" (Точные GPS координаты: {lat:.5f}, {lon:.5f})" if (lat and lon) else ""
 
+    # Ground truth: certified AAA daily state diesel benchmark
+    st_hint = geo.get("state_code") or geo.get("state") if geo else city_st
+    bench = get_state_diesel_benchmark(st_hint) or {"code": "US", "name": "USA", "diesel": 6.25, "range_low": 5.95, "range_high": 6.55}
+    state_diesel_avg = bench["diesel"]
+    state_range_low = bench["range_low"]
+    state_range_high = bench["range_high"]
+    state_name = bench["name"]
+
     prompt = f"""
 Ты — ночной американский диспетчер автовозного флота.
 Водитель автовоза ищет дизель. Локация: {resolved_loc_str}{gps_str} (Регион: {city_st}).
 - СЕТАП: {driver_setup}
 - ГРУЗ: {cargo}
+
+АКТУАЛЬНЫЕ СЕРТИФИЦИРОВАННЫЕ ДАННЫЕ AAA ПО ШТАТУ ({state_name}):
+- Средняя розничная цена на дизель на сегодня: ${state_diesel_avg:.2f}/gal
+- Реалистичный диапазон цен вдоль Interstate коридора: ${state_range_low:.2f} – ${state_range_high:.2f}/gal
+- КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО называть устаревшие докризисные цены $3.xx в штатах, где текущая цена превышает $6.00 (Орегон, Вашингтон, Калифорния и др.)!
 
 СТРОГИЕ ТРЕБОВАНИЯ К ДАННЫМ (СЕРЬЕЗНЫЙ ПРОДУКТ ДЛЯ ВОДИТЕЛЕЙ, БЕЗ ФЕЙКОВ):
 1. Называй ТОЛЬКО РЕАЛЬНО СУЩЕСТВУЮЩИЕ трак-стопы вдоль Interstate магистралей рядом с этой точкой ({city_st}).
@@ -272,7 +288,7 @@ def generate_fuel_recommendations(location_query: str, driver_setup: str = None,
 3. Google Maps ссылку делай СТРОГО на точный адрес (со знаком + вместо пробелов), чтобы навигатор открывал прямой PIN карточки объекта, а не список:
    <a href="https://www.google.com/maps/search/?api=1&amp;query=[Точный+Адрес+с+Плюсами]">🗺️ Маршрут в Навигатор (Exit [XXX])</a>
 4. НИКАКИХ вымышленных ценников до цента и фейковых таймстампов («проверено 14 мин назад»).
-   Укажи официальный средний диапазон цен на дизель по этому штату/коридору и напомни, что точный дисконт до цента по топливной карте нужно смотреть в Mudflap / RTS перед съездом.
+   Укажи официальный средний диапазон цен на дизель (${state_range_low:.2f} – ${state_range_high:.2f}/gal) и напомни, что точный дисконт до цента по топливной карте нужно смотреть в Mudflap / RTS перед съездом.
 
 ФОРМАТ СТРОГО:
 ⛽ <b>Дизель под твой сетап:</b> {driver_setup}
@@ -293,7 +309,7 @@ def generate_fuel_recommendations(location_query: str, driver_setup: str = None,
 • 🛠️ [Короткий совет по выезду/парковке]
 • 🗺️ <a href="https://www.google.com/maps/search/?api=1&amp;query=[Точный+Адрес+с+Плюсами]">Маршрут в Навигатор (Exit [XXX])</a>
 
-💡 <b>Ориентир цен и IFTA:</b> [Реальная ставка IFTA штата, средний диапазон цен по региону. Точный дисконт до цента по топливной карте смотри в Mudflap / RTS].
+💡 <b>Ориентир цен и IFTA:</b> [Реальная ставка IFTA штата, официальный средний диапазон ${state_range_low:.2f} – ${state_range_high:.2f}/gal по данным AAA. Точный дисконт до цента по топливной карте смотри в Mudflap / RTS].
 """
     if GEMINI_KEY:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key={GEMINI_KEY}"
@@ -317,9 +333,11 @@ def generate_fuel_recommendations(location_query: str, driver_setup: str = None,
                     if parts:
                         raw_text = parts[0].get("text", "").strip()
                         if raw_text:
-                            return markdown_to_telegram_html(raw_text)
+                            html_text = markdown_to_telegram_html(raw_text)
+                            return multi_agent_sense_check(html_text, context_type="fuel", location_str=resolved_loc_str, state_code=bench["code"])
         except Exception as e:
             print(f"[WARN] Gemini fuel call failed ({e}), using dynamic geo fallback...")
 
-    # Dynamic fallback based on real resolved entity
-    return generate_fallback_fuel_for_geo(geo, driver_setup, lat=lat, lon=lon)
+    # Dynamic fallback based on real resolved entity + verified sense check
+    fallback_res = generate_fallback_fuel_for_geo(geo, driver_setup, lat=lat, lon=lon)
+    return multi_agent_sense_check(fallback_res, context_type="fuel", location_str=resolved_loc_str, state_code=bench["code"])

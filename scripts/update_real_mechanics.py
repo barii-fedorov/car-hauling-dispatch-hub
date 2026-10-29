@@ -16,6 +16,7 @@ def run():
     # Insert verified real Slavic shops and mobile specialists with real phone numbers
     real_mechanics = [
         (
+            "mech_balkan_il",
             "Balkan Truck & Trailer Repair",
             "+1 (708) 572-4114",
             "RU / EN / Slavic",
@@ -36,6 +37,7 @@ def run():
             "Большой бокс в Bridgeview, выездная бригада по I-55/I-80/I-294. Запчасти и фитинги в наличии."
         ),
         (
+            "mech_promobile_il",
             "Pro Mobile Truck Services (Road Rescue)",
             "+1 (773) 209-5149",
             "RU / UA / EN",
@@ -56,6 +58,7 @@ def run():
             "Круглосуточный выезд по Чикаголенду. Своя опрессовка шлангов прямо на трассе."
         ),
         (
+            "mech_norcal_ca",
             "NorCal Truck Repair (Alex & Roman)",
             "+1 (916) 846-3471",
             "RU / EN",
@@ -76,6 +79,7 @@ def run():
             "3202 Orange Grove Ave. Полная база для автовозников, ремонт перед подъемом на Donner Pass I-80."
         ),
         (
+            "mech_trc_tx",
             "Truck Repair Center (TRC DFW)",
             "+1 (848) 330-3303",
             "RU / EN",
@@ -96,6 +100,7 @@ def run():
             "5350 Ganzer Rd. Русскоязычные мастера, обслуживание коммерческих траков и автовозов."
         ),
         (
+            "mech_tt_nj",
             "TT Performance Truck Repair",
             "+1 (215) 941-8364",
             "RU / EN",
@@ -116,6 +121,7 @@ def run():
             "79 Hartford Rd, Delran NJ (напротив Филадельфии/Бенсейлема). Быстрое обслуживание автовозов."
         ),
         (
+            "mech_monster_fl",
             "Monster Truck Repair",
             "+1 (786) 703-6128",
             "RU / EN / ES",
@@ -136,6 +142,7 @@ def run():
             "8960 NW 119th St. Крупный трак-сервис на юге Флориды. Работают со сложными автовозными сетапами."
         ),
         (
+            "mech_usaroad_fl",
             "USA Road Service (Mobile Roadside)",
             "+1 (786) 624-7101",
             "RU / EN / ES",
@@ -160,12 +167,12 @@ def run():
     for m in real_mechanics:
         cur.execute("""
             INSERT INTO car_hauler_mechanics (
-                name, contact_phone, languages, city, state, corridor,
+                mechanic_id, name, contact_phone, languages, city, state, corridor,
                 latitude, longitude, coverage_radius_miles, is_mobile, has_shop,
                 specialties, payment_methods, no_dot_reports, trust_level, trust_score,
                 verified_reviews_count, notes
             ) VALUES (
-                %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s, %s, %s,
                 %s, %s, %s, %s, %s,
                 %s, %s, %s, %s, %s,
                 %s, %s

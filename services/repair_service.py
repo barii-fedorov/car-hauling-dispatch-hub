@@ -203,4 +203,9 @@ def handle_repair_inquiry(text: str = "", lat: float = None, lon: float = None, 
             state = "GA"
 
     mechanics = find_mechanics(lat=lat, lon=lon, state=state, query_text=text, limit=3)
-    return format_mechanics_response(mechanics, user_location_str=location_str)
+    formatted = format_mechanics_response(mechanics, user_location_str=location_str)
+    try:
+        from services.grounding_verifier import multi_agent_sense_check
+        return multi_agent_sense_check(formatted, context_type="repair")
+    except Exception:
+        return formatted
