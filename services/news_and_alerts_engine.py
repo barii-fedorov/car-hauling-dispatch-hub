@@ -227,74 +227,94 @@ def generate_road_alert_post(item):
 """
     return ask_gemini_prompt(prompt)
 
-def send_telegram_post(text, image_url=None, target_chats=None):
+PG_HOST = os.environ.get("POSTGRES_HOST", "postgres")
+PG_PORT = int(os.environ.get("POSTGRES_PORT", "5432"))
+PG_USER = os.environ.get("POSTGRES_USER", "dispatch_admin")
+PG_PASS = os.environ.get("POSTGRES_PASSWORD", "DispatchSecurePass2026!_pg")
+PG_DB = os.environ.get("POSTGRES_DB", "dispatch_hub")
+
+def send_draft_for_approval(post_id, post_type, title, text, image_url=None):
     if not BOT_TOKEN:
         print("[ERROR] TELEGRAM_BOT_TOKEN is missing!")
         return False
-    if target_chats is None:
-        target_chats = [CHANNEL_ID, ADMIN_CHAT_ID]
 
-    success = True
-    for chat_id in target_chats:
+    # 1. Register in PostgreSQL
+    try:
+        import psycopg2
+        conn = psycopg2.connect(host=PG_HOST, port=PG_PORT, user=PG_USER, password=PG_PASS, dbname=PG_DB)
+        cur = conn.cursor()
+        category = "Accidents" if "алерт" in text.lower() else "News"
+        cur.execute("""
+            INSERT INTO telegram_posts (post_id, post_type, title, summary, content, image_url, primary_category, status)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, 'pending_approval')
+            ON CONFLICT (post_id) DO NOTHING;
+        """, (post_id, post_type, title, text[:200], text, image_url, category))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"[WARN] Failed to insert draft into DB: {e}")
+
+    # 2. Dispatch to Cabinet with Inline Approval Buttons
+    reply_markup = {
+        "inline_keyboard": [
+            [
+                {"text": "✅ Опубликовать в канал", "callback_data": f"publish_{post_id}"},
+                {"text": "❌ Отклонить", "callback_data": f"reject_{post_id}"}
+            ]
+        ]
+    }
+
+    header = "📋 **[НОВЫЙ ЧЕРНОВИК НА АПРУВ]**\n\n"
+    full_text = header + text
+    caption_text = full_text[:1020]
+
+    if image_url:
+        photo_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
+        payload = {
+            "chat_id": ADMIN_CHAT_ID,
+            "photo": image_url,
+            "caption": caption_text,
+            "parse_mode": "Markdown",
+            "reply_markup": reply_markup
+        }
         try:
-            caption_text = text[:1020]
-            delivered = False
+            req = urllib.request.Request(photo_url, data=json.dumps(payload).encode("utf-8"), headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                print(f"[OK] Draft with photo sent to Cabinet for approval: {title}")
+                return True
+        except Exception:
+            payload.pop("parse_mode", None)
+            try:
+                req = urllib.request.Request(photo_url, data=json.dumps(payload).encode("utf-8"), headers={"Content-Type": "application/json"})
+                urllib.request.urlopen(req, timeout=15)
+                print(f"[OK] Draft with photo sent to Cabinet (plain text fallback)")
+                return True
+            except Exception as e:
+                print(f"[WARN] sendPhoto to Cabinet failed: {e}")
 
-            if image_url:
-                # Try sendPhoto with Markdown
-                photo_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
-                payload = {
-                    "chat_id": chat_id,
-                    "photo": image_url,
-                    "caption": caption_text,
-                    "parse_mode": "Markdown"
-                }
-                req = urllib.request.Request(
-                    photo_url,
-                    data=json.dumps(payload).encode("utf-8"),
-                    headers={"Content-Type": "application/json"}
-                )
-                try:
-                    urllib.request.urlopen(req, timeout=20)
-                    print(f"[OK] Photo post delivered to chat {chat_id}")
-                    delivered = True
-                except urllib.error.HTTPError:
-                    # Retry sendPhoto without markdown parse_mode
-                    try:
-                        payload.pop("parse_mode", None)
-                        req = urllib.request.Request(photo_url, data=json.dumps(payload).encode("utf-8"), headers={"Content-Type": "application/json"})
-                        urllib.request.urlopen(req, timeout=20)
-                        print(f"[OK] Photo post delivered to chat {chat_id} (fallback without markdown)")
-                        delivered = True
-                    except Exception as ex_photo:
-                        print(f"[WARN] sendPhoto fallback failed: {ex_photo}")
-
-            if not delivered:
-                # Fallback to sendMessage
-                msg_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-                payload = {
-                    "chat_id": chat_id,
-                    "text": text,
-                    "parse_mode": "Markdown",
-                    "disable_web_page_preview": False
-                }
-                req = urllib.request.Request(
-                    msg_url,
-                    data=json.dumps(payload).encode("utf-8"),
-                    headers={"Content-Type": "application/json"}
-                )
-                try:
-                    urllib.request.urlopen(req, timeout=15)
-                    print(f"[OK] Text post delivered to chat {chat_id}")
-                except urllib.error.HTTPError:
-                    payload.pop("parse_mode", None)
-                    req = urllib.request.Request(msg_url, data=json.dumps(payload).encode("utf-8"), headers={"Content-Type": "application/json"})
-                    urllib.request.urlopen(req, timeout=15)
-                    print(f"[OK] Text post delivered to chat {chat_id} (plain text fallback)")
+    # Text-only fallback to Cabinet
+    msg_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": ADMIN_CHAT_ID,
+        "text": full_text,
+        "parse_mode": "Markdown",
+        "reply_markup": reply_markup
+    }
+    try:
+        req = urllib.request.Request(msg_url, data=json.dumps(payload).encode("utf-8"), headers={"Content-Type": "application/json"})
+        urllib.request.urlopen(req, timeout=15)
+        print(f"[OK] Text draft sent to Cabinet for approval: {title}")
+        return True
+    except Exception:
+        payload.pop("parse_mode", None)
+        try:
+            req = urllib.request.Request(msg_url, data=json.dumps(payload).encode("utf-8"), headers={"Content-Type": "application/json"})
+            urllib.request.urlopen(req, timeout=15)
+            print(f"[OK] Text draft sent to Cabinet (plain text fallback)")
+            return True
         except Exception as e:
-            print(f"[ERROR] Delivery failed to {chat_id}: {e}")
-            success = False
-    return success
+            print(f"[ERROR] Failed to send draft to Cabinet: {e}")
+            return False
 
 def run_news_pipeline():
     print(f"[{datetime.now()}] [NEWS PIPELINE] Checking for high-impact car hauler news...")
@@ -307,12 +327,13 @@ def run_news_pipeline():
         print(f"[FOUND NEWS] {item['title']} (Image: {bool(item['image_url'])})")
         post_text = generate_news_post(item)
         if post_text:
-            if send_telegram_post(post_text, image_url=item["image_url"]):
+            post_id = f"news_{int(time.time())}_{abs(hash(item['guid'])) % 10000}"
+            if send_draft_for_approval(post_id, "news", item["title"], post_text, image_url=item["image_url"]):
                 mark_processed(item["guid"], item["title"], "news")
-                print(f"[PUBLISHED NEWS] {item['title']}")
-                break # 1 in-depth news article per run
+                print(f"[SUBMITTED TO CABINET] {item['title']}")
+                break
             else:
-                print(f"[FAIL] Could not deliver news: {item['title']}")
+                print(f"[FAIL] Could not send to Cabinet: {item['title']}")
 
 def run_alerts_pipeline():
     print(f"[{datetime.now()}] [ALERTS PIPELINE] Scanning for highway incidents & road closures...")
@@ -332,11 +353,12 @@ def run_alerts_pipeline():
         print(f"[CRITICAL ROAD ALERT] {item['title']}")
         alert_text = generate_road_alert_post(item)
         if alert_text:
-            if send_telegram_post(alert_text, image_url=item["image_url"]):
+            post_id = f"alert_{int(time.time())}_{abs(hash(item['guid'])) % 10000}"
+            if send_draft_for_approval(post_id, "alert", item["title"], alert_text, image_url=item["image_url"]):
                 mark_processed(item["guid"], item["title"], "alert")
-                print(f"[PUBLISHED ALERT] {item['title']}")
+                print(f"[SUBMITTED TO CABINET] {item['title']}")
                 count += 1
-                if count >= 2: # Max 2 rapid alerts per sweep to avoid spam
+                if count >= 2:
                     break
 
 def main():

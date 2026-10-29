@@ -1,0 +1,223 @@
+{
+  "dashboard": {
+    "id": null,
+    "uid": "telegram-content-analytics",
+    "title": "Telegram & Content Analytics: Car Hauler Base",
+    "tags": ["telegram", "content", "analytics", "car-hauling"],
+    "timezone": "browser",
+    "schemaVersion": 38,
+    "version": 1,
+    "refresh": "1m",
+    "panels": [
+      {
+        "id": 1,
+        "title": "Всего опубликовано постов",
+        "type": "stat",
+        "gridPos": {"h": 4, "w": 4, "x": 0, "y": 0},
+        "datasource": {"type": "grafana-postgresql-datasource", "uid": "dg2p90s21bz7kd"},
+        "targets": [
+          {
+            "format": "table",
+            "rawSql": "SELECT count(*) as total_posts FROM telegram_posts WHERE status = 'published';",
+            "refId": "A"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "color": {"mode": "fixed", "fixedColor": "blue"}
+          }
+        }
+      },
+      {
+        "id": 2,
+        "title": "Суммарный охват (Просмотры)",
+        "type": "stat",
+        "gridPos": {"h": 4, "w": 5, "x": 4, "y": 0},
+        "datasource": {"type": "grafana-postgresql-datasource", "uid": "dg2p90s21bz7kd"},
+        "targets": [
+          {
+            "format": "table",
+            "rawSql": "SELECT sum(views_count) as total_views FROM telegram_posts WHERE status = 'published';",
+            "refId": "A"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "color": {"mode": "fixed", "fixedColor": "green"}
+          }
+        }
+      },
+      {
+        "id": 3,
+        "title": "Средний ER (Engagement Rate)",
+        "type": "stat",
+        "gridPos": {"h": 4, "w": 5, "x": 9, "y": 0},
+        "datasource": {"type": "grafana-postgresql-datasource", "uid": "dg2p90s21bz7kd"},
+        "targets": [
+          {
+            "format": "table",
+            "rawSql": "SELECT round(avg(engagement_rate), 2) as avg_er FROM telegram_posts WHERE status = 'published';",
+            "refId": "A"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percent",
+            "color": {"mode": "thresholds"},
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {"color": "red", "value": null},
+                {"color": "yellow", "value": 12},
+                {"color": "green", "value": 18}
+              ]
+            }
+          }
+        }
+      },
+      {
+        "id": 4,
+        "title": "Суммарно реакций и репостов",
+        "type": "stat",
+        "gridPos": {"h": 4, "w": 5, "x": 14, "y": 0},
+        "datasource": {"type": "grafana-postgresql-datasource", "uid": "dg2p90s21bz7kd"},
+        "targets": [
+          {
+            "format": "table",
+            "rawSql": "SELECT sum(reactions_count + forwards_count) as total_engagements FROM telegram_posts WHERE status = 'published';",
+            "refId": "A"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "color": {"mode": "fixed", "fixedColor": "orange"}
+          }
+        }
+      },
+      {
+        "id": 5,
+        "title": "Апрув-рейт в Cabinet (%)",
+        "type": "stat",
+        "gridPos": {"h": 4, "w": 5, "x": 19, "y": 0},
+        "datasource": {"type": "grafana-postgresql-datasource", "uid": "dg2p90s21bz7kd"},
+        "targets": [
+          {
+            "format": "table",
+            "rawSql": "SELECT round((count(*) FILTER (WHERE status = 'published')::numeric / count(*)::numeric) * 100, 1) as approval_rate FROM telegram_posts;",
+            "refId": "A"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percent",
+            "color": {"mode": "fixed", "fixedColor": "purple"}
+          }
+        }
+      },
+      {
+        "id": 6,
+        "title": "Эффективность по рубрикам (Engagement Rate %)",
+        "type": "barchart",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 4},
+        "datasource": {"type": "grafana-postgresql-datasource", "uid": "dg2p90s21bz7kd"},
+        "targets": [
+          {
+            "format": "table",
+            "rawSql": "SELECT primary_category as \"Категория\", round(avg(engagement_rate), 2) as \"Средний ER (%)\" FROM telegram_posts WHERE status = 'published' GROUP BY primary_category ORDER BY \"Средний ER (%)\" DESC;",
+            "refId": "A"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percent",
+            "color": {"mode": "palette-classic"}
+          }
+        }
+      },
+      {
+        "id": 7,
+        "title": "Популярность коридоров и трасс (Охват просмотров)",
+        "type": "piechart",
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 4},
+        "datasource": {"type": "grafana-postgresql-datasource", "uid": "dg2p90s21bz7kd"},
+        "targets": [
+          {
+            "format": "table",
+            "rawSql": "SELECT primary_corridor as \"Трасса\", sum(views_count) as \"Просмотры\" FROM telegram_posts WHERE status = 'published' AND primary_corridor IS NOT NULL GROUP BY primary_corridor ORDER BY \"Просмотры\" DESC;",
+            "refId": "A"
+          }
+        ]
+      },
+      {
+        "id": 8,
+        "title": "Вовлеченность аудитории по типам автовозов (Стингер vs Виджик vs Все)",
+        "type": "barchart",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 12},
+        "datasource": {"type": "grafana-postgresql-datasource", "uid": "dg2p90s21bz7kd"},
+        "targets": [
+          {
+            "format": "table",
+            "rawSql": "SELECT target_setup as \"Сетап\", round(avg(engagement_rate), 2) as \"ER (%)\", sum(views_count) as \"Просмотры\" FROM telegram_posts WHERE status = 'published' GROUP BY target_setup ORDER BY \"ER (%)\" DESC;",
+            "refId": "A"
+          }
+        ]
+      },
+      {
+        "id": 9,
+        "title": "Статус постов в Cabinet (Одобрено / Отклонено / На проверке)",
+        "type": "piechart",
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 12},
+        "datasource": {"type": "grafana-postgresql-datasource", "uid": "dg2p90s21bz7kd"},
+        "targets": [
+          {
+            "format": "table",
+            "rawSql": "SELECT status as \"Статус\", count(*) as \"Количество\" FROM telegram_posts GROUP BY status;",
+            "refId": "A"
+          }
+        ]
+      },
+      {
+        "id": 10,
+        "title": "Журнал и рейтинг постов: какие новости работают лучше всего",
+        "type": "table",
+        "gridPos": {"h": 10, "w": 24, "x": 0, "y": 20},
+        "datasource": {"type": "grafana-postgresql-datasource", "uid": "dg2p90s21bz7kd"},
+        "targets": [
+          {
+            "format": "table",
+            "rawSql": "SELECT published_at::date as \"Дата\", title as \"Заголовок\", primary_category as \"Категория\", primary_corridor as \"Трасса\", primary_state as \"Штат\", views_count as \"Просмотры\", reactions_count as \"Реакции\", forwards_count as \"Репосты\", engagement_rate as \"ER (%)\", status as \"Статус\" FROM telegram_posts ORDER BY published_at DESC LIMIT 50;",
+            "refId": "A"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "custom": {
+              "align": "auto",
+              "cellOptions": {"type": "auto"}
+            }
+          },
+          "overrides": [
+            {
+              "matcher": {"id": "byName", "options": "ER (%)"},
+              "properties": [
+                {
+                  "id": "thresholds",
+                  "value": {
+                    "mode": "absolute",
+                    "steps": [
+                      {"color": "red", "value": null},
+                      {"color": "yellow", "value": 15},
+                      {"color": "green", "value": 20}
+                    ]
+                  }
+                },
+                {"id": "custom.cellOptions", "value": {"type": "color-background", "mode": "gradient"}}
+              ]
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "overwrite": true
+}

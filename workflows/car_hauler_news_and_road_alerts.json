@@ -1,5 +1,5 @@
 {
-  "name": "Car Hauler News & Road Alerts Dispatcher",
+  "name": "Car Hauler News & Road Alerts (Cabinet Approval Pipeline)",
   "nodes": [
     {
       "parameters": {
@@ -17,7 +17,7 @@
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.2,
       "position": [
-        220,
+        200,
         240
       ]
     },
@@ -37,7 +37,7 @@
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.2,
       "position": [
-        220,
+        200,
         480
       ]
     },
@@ -48,50 +48,50 @@
       "type": "n8n-nodes-base.manualTrigger",
       "typeVersion": 1,
       "position": [
-        220,
+        200,
         360
       ]
     },
     {
       "parameters": {
-        "command": "python3 /app/services/news_and_alerts_engine.py --news"
+        "command": "python3 -u /app/services/news_and_alerts_engine.py --news"
       },
       "id": "9742a7b1-2138-4ee0-8801-4475143a531b",
-      "name": "Run News Pipeline (CDLLife / FreightWaves / Photos)",
+      "name": "1. Ingest News & Draft via Gemini (CDLLife / FreightWaves)",
       "type": "n8n-nodes-base.executeCommand",
       "typeVersion": 1,
       "position": [
-        520,
+        480,
         240
       ]
     },
     {
       "parameters": {
-        "command": "python3 /app/services/news_and_alerts_engine.py --alerts"
+        "command": "python3 -u /app/services/news_and_alerts_engine.py --alerts"
       },
       "id": "841804b9-38b3-4f9e-be41-0373e3a47942",
-      "name": "Run Road Alerts Pipeline (Incidents & Checkpoints)",
+      "name": "1. Ingest Road Incidents & Draft Alert",
       "type": "n8n-nodes-base.executeCommand",
       "typeVersion": 1,
       "position": [
-        520,
+        480,
         480
       ]
     },
     {
       "parameters": {
         "chatId": "={{ $env.ADMIN_CHAT_ID || '-1004420587350' }}",
-        "text": "={{ '🟢 **[n8n Status]** News workflow executed successfully:\n\n' + $json.stdout }}",
+        "text": "={{ '🛎️ **[Cabinet Approval Alert]** Черновик направлен на согласование в Cabinet:\n\n' + $json.stdout }}",
         "additionalFields": {
           "parse_mode": "Markdown"
         }
       },
       "id": "4b6845c2-f19b-4e89-a991-5f284e272b14",
-      "name": "Notify Admin Cabinet",
+      "name": "2. Send to Cabinet with Approval Buttons",
       "type": "n8n-nodes-base.telegram",
       "typeVersion": 1.2,
       "position": [
-        780,
+        760,
         360
       ]
     }
@@ -101,7 +101,7 @@
       "main": [
         [
           {
-            "node": "Run News Pipeline (CDLLife / FreightWaves / Photos)",
+            "node": "1. Ingest News & Draft via Gemini (CDLLife / FreightWaves)",
             "type": "main",
             "index": 0
           }
@@ -112,7 +112,7 @@
       "main": [
         [
           {
-            "node": "Run News Pipeline (CDLLife / FreightWaves / Photos)",
+            "node": "1. Ingest News & Draft via Gemini (CDLLife / FreightWaves)",
             "type": "main",
             "index": 0
           }
@@ -123,29 +123,29 @@
       "main": [
         [
           {
-            "node": "Run Road Alerts Pipeline (Incidents & Checkpoints)",
+            "node": "1. Ingest Road Incidents & Draft Alert",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Run News Pipeline (CDLLife / FreightWaves / Photos)": {
+    "1. Ingest News & Draft via Gemini (CDLLife / FreightWaves)": {
       "main": [
         [
           {
-            "node": "Notify Admin Cabinet",
+            "node": "2. Send to Cabinet with Approval Buttons",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Run Road Alerts Pipeline (Incidents & Checkpoints)": {
+    "1. Ingest Road Incidents & Draft Alert": {
       "main": [
         [
           {
-            "node": "Notify Admin Cabinet",
+            "node": "2. Send to Cabinet with Approval Buttons",
             "type": "main",
             "index": 0
           }
@@ -153,7 +153,7 @@
       ]
     }
   },
-  "active": false,
+  "active": true,
   "settings": {
     "executionOrder": "v1"
   }

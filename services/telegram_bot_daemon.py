@@ -18,6 +18,13 @@ import urllib.error
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
 ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID", "-1004420587350")
+CHANNEL_ID = os.environ.get("CHANNEL_CHAT_ID", "-1004424371115")
+
+PG_HOST = os.environ.get("POSTGRES_HOST", "postgres")
+PG_PORT = int(os.environ.get("POSTGRES_PORT", "5432"))
+PG_USER = os.environ.get("POSTGRES_USER", "dispatch_admin")
+PG_PASS = os.environ.get("POSTGRES_PASSWORD", "DispatchSecurePass2026!_pg")
+PG_DB = os.environ.get("POSTGRES_DB", "dispatch_hub")
 
 if not BOT_TOKEN:
     print("[CRITICAL] TELEGRAM_BOT_TOKEN environment variable is missing!")
@@ -186,6 +193,121 @@ def process_message(msg):
     except Exception as e:
         print(f"[WARN] Failed to log case: {e}")
 
+def answer_callback_query(callback_query_id, text=None):
+    try:
+        url = f"{API_URL}/answerCallbackQuery"
+        payload = {"callback_query_id": callback_query_id}
+        if text:
+            payload["text"] = text
+            payload["show_alert"] = False
+        req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers={"Content-Type": "application/json"})
+        urllib.request.urlopen(req, timeout=5)
+    except Exception as e:
+        print(f"[WARN] Failed to answer callback query: {e}")
+
+def edit_message_reply_markup(chat_id, message_id, reply_markup=None):
+    try:
+        url = f"{API_URL}/editMessageReplyMarkup"
+        payload = {"chat_id": chat_id, "message_id": message_id}
+        if reply_markup is not None:
+            payload["reply_markup"] = reply_markup
+        else:
+            payload["reply_markup"] = {"inline_keyboard": []}
+        req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers={"Content-Type": "application/json"})
+        urllib.request.urlopen(req, timeout=5)
+    except Exception as e:
+        print(f"[WARN] Failed to edit markup: {e}")
+
+def process_callback_query(cb):
+    cb_id = cb.get("id")
+    data = cb.get("data", "")
+    from_user = cb.get("from", {})
+    username = from_user.get("username", from_user.get("first_name", "Admin"))
+    msg = cb.get("message", {})
+    chat_id = msg.get("chat", {}).get("id")
+    msg_id = msg.get("message_id")
+
+    print(f"[CALLBACK] Button clicked by @{username}: data='{data}' (msg {msg_id})")
+
+    if data.startswith("publish_"):
+        post_id = data.replace("publish_", "")
+        # 1. Fetch post from PostgreSQL
+        try:
+            import psycopg2
+            conn = psycopg2.connect(host=PG_HOST, port=PG_PORT, user=PG_USER, password=PG_PASS, dbname=PG_DB)
+            cur = conn.cursor()
+            cur.execute("SELECT title, content, image_url FROM telegram_posts WHERE post_id = %s;", (post_id,))
+            post = cur.fetchone()
+            if post:
+                title, content, image_url = post
+                # 2. Publish to Channel
+                channel_msg_id = None
+                if image_url:
+                    photo_url = f"{API_URL}/sendPhoto"
+                    p_load = {"chat_id": CHANNEL_ID, "photo": image_url, "caption": content[:1020], "parse_mode": "Markdown"}
+                    try:
+                        req = urllib.request.Request(photo_url, data=json.dumps(p_load).encode(), headers={"Content-Type": "application/json"})
+                        with urllib.request.urlopen(req, timeout=15) as resp:
+                            res = json.loads(resp.read().decode())
+                            channel_msg_id = res["result"]["message_id"]
+                    except Exception:
+                        p_load.pop("parse_mode", None)
+                        req = urllib.request.Request(photo_url, data=json.dumps(p_load).encode(), headers={"Content-Type": "application/json"})
+                        with urllib.request.urlopen(req, timeout=15) as resp:
+                            res = json.loads(resp.read().decode())
+                            channel_msg_id = res["result"]["message_id"]
+                else:
+                    m_url = f"{API_URL}/sendMessage"
+                    p_load = {"chat_id": CHANNEL_ID, "text": content, "parse_mode": "Markdown"}
+                    try:
+                        req = urllib.request.Request(m_url, data=json.dumps(p_load).encode(), headers={"Content-Type": "application/json"})
+                        with urllib.request.urlopen(req, timeout=15) as resp:
+                            res = json.loads(resp.read().decode())
+                            channel_msg_id = res["result"]["message_id"]
+                    except Exception:
+                        p_load.pop("parse_mode", None)
+                        req = urllib.request.Request(m_url, data=json.dumps(p_load).encode(), headers={"Content-Type": "application/json"})
+                        with urllib.request.urlopen(req, timeout=15) as resp:
+                            res = json.loads(resp.read().decode())
+                            channel_msg_id = res["result"]["message_id"]
+
+                # 3. Update PostgreSQL status
+                cur.execute("""
+                    UPDATE telegram_posts 
+                    SET status = 'published', approved_by = %s, published_at = NOW(), channel_message_id = %s
+                    WHERE post_id = %s;
+                """, (username, channel_msg_id, post_id))
+                conn.commit()
+            conn.close()
+        except Exception as e:
+            print(f"[ERROR] DB update failed: {e}")
+
+        # 4. Remove buttons and update Cabinet message
+        edit_message_reply_markup(chat_id, msg_id, None)
+        send_telegram_message(chat_id, f"✅ **ОДОБРЕНО И ОПУБЛИКОВАНО в канал @{username}**", reply_to_message_id=msg_id)
+        answer_callback_query(cb_id, text="🚀 Пост успешно опубликован в канал «Грузовики на базу»!")
+
+    elif data.startswith("reject_"):
+        post_id = data.replace("reject_", "")
+        try:
+            import psycopg2
+            conn = psycopg2.connect(host=PG_HOST, port=PG_PORT, user=PG_USER, password=PG_PASS, dbname=PG_DB)
+            cur = conn.cursor()
+            cur.execute("""
+                UPDATE telegram_posts 
+                SET status = 'rejected', approved_by = %s 
+                WHERE post_id = %s;
+            """, (username, post_id))
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            print(f"[ERROR] DB update failed: {e}")
+
+        # Remove buttons and update Cabinet message
+        edit_message_reply_markup(chat_id, msg_id, None)
+        send_telegram_message(chat_id, f"❌ **ОТКЛОНЕНО @{username}**", reply_to_message_id=msg_id)
+        answer_callback_query(cb_id, text="Пост отклонен.")
+
 def run_bot():
     print(f"[START] Starting Telegram Bot Daemon for @CarHaulerSOS_bot...")
     offset = 0
@@ -200,6 +322,8 @@ def run_bot():
                     offset = max(offset, u["update_id"] + 1)
                     if "message" in u:
                         process_message(u["message"])
+                    elif "callback_query" in u:
+                        process_callback_query(u["callback_query"])
         except urllib.error.URLError as e:
             print(f"[RETRY] Network connection: {e}")
             time.sleep(3)
