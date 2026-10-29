@@ -16,6 +16,16 @@ import urllib.error
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from telegram_formatter import markdown_to_telegram_html, strip_html_tags
+from fuel_advisor import (
+    init_fuel_session_db,
+    get_driver_session,
+    set_driver_session,
+    is_fuel_inquiry,
+    get_fuel_request_prompt,
+    reverse_geocode,
+    extract_setup_and_cargo,
+    generate_fuel_recommendations
+)
 
 # Config & Credentials loaded securely from Environment Variables
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -170,14 +180,15 @@ def process_message(msg):
     chat_id = chat.get("id")
     msg_id = msg.get("message_id")
     text = msg.get("text", "").strip()
+    location = msg.get("location")
     from_user = msg.get("from", {})
     username = from_user.get("username", from_user.get("first_name", "оунер"))
     thread_id = msg.get("message_thread_id")
 
-    if not text or not chat_id:
+    if not chat_id or (not text and not location):
         return
 
-    print(f"[MSG] From @{username} (chat {chat_id}, thread {thread_id}): {text}")
+    print(f"[MSG] From @{username} (chat {chat_id}, thread {thread_id}): {text or location}")
 
     # Check if this is an admin revision comment in Cabinet
     reply_to = msg.get("reply_to_message")
@@ -290,6 +301,7 @@ def process_message(msg):
 
     # Start command
     if text.startswith("/start"):
+        set_driver_session(chat_id, state="idle")
         welcome_text = (
             "🚛 *Здорово, оунер! На связи Совет Агентов автовозного диспатча («Грузовики на базу»).*\n\n"
             "Мы прикрываем твою спину на дороге 24/7. Наш принцип — **водитель всегда прав**.\n\n"
@@ -301,6 +313,53 @@ def process_message(msg):
             "👉 *Просто напиши сюда свою проблему, номер MC брокера или вопрос — Совет сразу ответит!*"
         )
         send_telegram_message(chat_id, welcome_text, reply_to_message_id=msg_id)
+        return
+
+    # Fuel Intelligence Flow
+    session = get_driver_session(chat_id)
+    session_state = session.get("state")
+
+    # A. Did driver send location pin OR are they responding to fuel request?
+    if location or session_state == "awaiting_fuel_details":
+        send_chat_action(chat_id, "find_location")
+        if location:
+            lat = location.get("latitude")
+            lon = location.get("longitude")
+            loc_str = reverse_geocode(lat, lon)
+        else:
+            loc_str = text
+
+        setup, cargo = extract_setup_and_cargo(text)
+        driver_setup = setup or session.get("driver_setup") or "Стингер 9-кар (Class 8)"
+        cargo_type = cargo or session.get("cargo_type") or "Груженый 7-8 авто"
+
+        send_chat_action(chat_id, "typing")
+        fuel_answer = generate_fuel_recommendations(loc_str, driver_setup=driver_setup, cargo=cargo_type)
+        set_driver_session(chat_id, state="idle", driver_setup=driver_setup, cargo_type=cargo_type)
+        send_telegram_message(chat_id, fuel_answer, reply_to_message_id=msg_id)
+        return
+
+    # B. Did driver ask about fuel / diesel / gas station?
+    if is_fuel_inquiry(text):
+        setup, cargo = extract_setup_and_cargo(text)
+        has_specific_location = any(k in text.lower() for k in [
+            "i-80", "i-70", "i-95", "i-10", "i-40", "i-35", "i-15", "i-20", "i-65", "i-75",
+            "exit", "выход", "шайенн", "cheyenne", "даллас", "dallas", "чикаго", "chicago",
+            "денвер", "denver", "техас", "texas", "вайоминг", "wyoming", "колорадо", "colorado",
+            "возле", "рядом", "в районе", "state"
+        ])
+        
+        if setup and has_specific_location:
+            send_chat_action(chat_id, "typing")
+            fuel_answer = generate_fuel_recommendations(text, driver_setup=setup, cargo=cargo)
+            set_driver_session(chat_id, state="idle", driver_setup=setup, cargo_type=cargo)
+            send_telegram_message(chat_id, fuel_answer, reply_to_message_id=msg_id)
+            return
+
+        # Ask in 1-3 lines for setup, cargo, and location pin
+        set_driver_session(chat_id, state="awaiting_fuel_details", driver_setup=setup, cargo_type=cargo, last_query=text)
+        prompt_msg = get_fuel_request_prompt()
+        send_telegram_message(chat_id, prompt_msg, reply_to_message_id=msg_id)
         return
 
     # Indicate typing to user
@@ -484,6 +543,7 @@ def process_callback_query(cb):
 
 def run_bot():
     print(f"[START] Starting Telegram Bot Daemon for @CarHaulerSOS_bot...")
+    init_fuel_session_db()
     offset = 0
     while True:
         try:
