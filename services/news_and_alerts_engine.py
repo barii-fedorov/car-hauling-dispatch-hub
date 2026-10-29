@@ -227,7 +227,13 @@ def generate_road_alert_post(item):
 3. СТРОКА 2: ⚠️ Совет автовозам (объезд, отстой на трак-стопе) + #Алерт #[Трасса] #[Штат] #[Сетап]
 4. НИКАКИХ картинок, вступлений и приветствий. Только 2 информативные строки!
 """
-    return ask_gemini_prompt(prompt)
+    raw = ask_gemini_prompt(prompt)
+    if raw:
+        lines = [line.strip() for line in raw.strip().split("\n") if line.strip()]
+        if len(lines) >= 2:
+            return f"{lines[0]}\n{lines[1]}"
+        return "\n".join(lines)
+    return None
 
 PG_HOST = os.environ.get("POSTGRES_HOST", "postgres")
 PG_PORT = int(os.environ.get("POSTGRES_PORT", "5432"))
@@ -235,7 +241,7 @@ PG_USER = os.environ.get("POSTGRES_USER", "dispatch_admin")
 PG_PASS = os.environ.get("POSTGRES_PASSWORD", "DispatchSecurePass2026!_pg")
 PG_DB = os.environ.get("POSTGRES_DB", "dispatch_hub")
 
-def send_draft_for_approval(post_id, post_type, title, text, image_url=None, thread_id=None):
+def send_draft_for_approval(post_id, post_type, title, text, image_url=None, thread_id=None, source_url=None, source_name=None):
     if not BOT_TOKEN:
         print("[ERROR] TELEGRAM_BOT_TOKEN is missing!")
         return False
@@ -256,7 +262,17 @@ def send_draft_for_approval(post_id, post_type, title, text, image_url=None, thr
         ]
     }
 
-    header = "📋 <b>[ЧЕРНОВИК НА АПРУВ]</b>\n\n"
+    if post_type == "alert":
+        header = "🚨 <b>[ЧЕРНОВИК НА АПРУВ: ДОРОЖНЫЙ АЛЕРТ]</b>\n"
+    else:
+        header = "📋 <b>[ЧЕРНОВИК НА АПРУВ: НОВОСТЬ]</b>\n"
+
+    if source_url:
+        src_label = source_name or "Оригинал источника"
+        header += f"🔗 <b>Источник:</b> <a href=\"{source_url}\">{src_label}</a>\n\n"
+    else:
+        header += "\n"
+
     formatted_body = markdown_to_telegram_html(text, max_length=950)
     html_caption = header + formatted_body
     cabinet_msg_id = None
@@ -351,7 +367,16 @@ def run_news_pipeline():
         post_text = generate_news_post(item)
         if post_text:
             post_id = f"news_{int(time.time())}_{abs(hash(item['guid'])) % 10000}"
-            if send_draft_for_approval(post_id, "news", item["title"], post_text, image_url=item["image_url"], thread_id=TOPIC_NEWS_ID):
+            if send_draft_for_approval(
+                post_id, 
+                "news", 
+                item["title"], 
+                post_text, 
+                image_url=item["image_url"], 
+                thread_id=TOPIC_NEWS_ID,
+                source_url=item.get("link"),
+                source_name=item.get("source")
+            ):
                 mark_processed(item["guid"], item["title"], "news")
                 print(f"[SUBMITTED TO CABINET TOPIC 22] {item['title']}")
                 break
@@ -378,7 +403,16 @@ def run_alerts_pipeline():
         alert_text = generate_road_alert_post(item)
         if alert_text:
             post_id = f"alert_{int(time.time())}_{abs(hash(item['guid'])) % 10000}"
-            if send_draft_for_approval(post_id, "alert", item["title"], alert_text, image_url=None, thread_id=TOPIC_ALERTS_ID):
+            if send_draft_for_approval(
+                post_id, 
+                "alert", 
+                item["title"], 
+                alert_text, 
+                image_url=None, 
+                thread_id=TOPIC_ALERTS_ID,
+                source_url=item.get("link"),
+                source_name=item.get("source")
+            ):
                 mark_processed(item["guid"], item["title"], "alert")
                 print(f"[SUBMITTED TO CABINET TOPIC 23] {item['title']}")
                 count += 1
