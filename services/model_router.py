@@ -154,9 +154,9 @@ def rate_request_difficulty(prompt: str, context_type: str = "general") -> tuple
 
     # Level 2 Check: Broker dossiers, repair matching, complex logistics
     tactical_indicators = [
-        "mc #", "mc#", "проверить брокера", "пробей mc", "бонд", "факторинг", "quickpay",
-        "ремонт", "лопнул шланг", "сварка", "гидравлика", "электрика", "стингер", "boydstun",
-        "cottrell", "kpra", "bridge formula", "развесовка"
+        "mc #", "mc#", "mc ", "проверить брокера", "пробей брокера", "пробей mc", "брокер", "брокера",
+        "бонд", "факторинг", "quickpay", "dtp", "ремонт", "лопнул шланг", "сварка", "гидравлика", 
+        "электрика", "стингер", "boydstun", "cottrell", "kpra", "bridge formula", "развесовка"
     ]
     if context_type in ["broker", "repair"] or any(k in text_lower for k in tactical_indicators):
         return 2, "Tactical car hauling operations / broker verification"
