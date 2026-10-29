@@ -290,6 +290,62 @@ def test_telegram_formatter():
     except Exception as e:
         record("Telegram Formatter", "Module Execution", "FAIL", str(e))
 
+# ==========================================
+# TEST 11: Dynamic Model Router & Quota Health
+# ==========================================
+def test_model_router():
+    try:
+        from model_router import rate_request_difficulty, metrics_tracker
+        d0, _ = rate_request_difficulty("/overhang CA")
+        d1, _ = rate_request_difficulty("где заправиться возле Орегона")
+        d2, _ = rate_request_difficulty("пробей брокера MC 1045231")
+        d3, _ = rate_request_difficulty("брокер отказывается платить и выставил клейм за царапину на крыше")
+        
+        metrics = metrics_tracker.generate_prometheus_metrics()
+        has_prom = "gemini_requests_total" in metrics and "gemini_active_rpm" in metrics
+        
+        if d0 == 0 and d1 == 1 and d2 == 2 and d3 == 3 and has_prom:
+            record("Model Router", "Difficulty Rating & Quota Metrics", "PASS", "Difficulty scored 0-3 correctly, Prometheus metrics active")
+        else:
+            record("Model Router", "Difficulty Rating & Quota Metrics", "FAIL", f"Difficulty scores: {d0},{d1},{d2},{d3}")
+    except Exception as e:
+        record("Model Router", "Module Execution", "FAIL", str(e))
+
+# ==========================================
+# TEST 12: News Engine Frequency Gating
+# ==========================================
+def test_news_frequency():
+    try:
+        from news_and_alerts_engine import is_true_road_emergency
+        is_true_alert = is_true_road_emergency("I-80 closed due to pileup at Elk Mountain, WY", "WYDOT reports all lanes shut down")
+        is_false_alert1 = is_true_road_emergency("Truck driver sentenced for crash 3 years ago", "A driver was sentenced to 5 years in prison")
+        is_false_alert2 = is_true_road_emergency("FMCSA announces new inspection blitz next summer", "The CVSA roadcheck is scheduled")
+        
+        if is_true_alert and not is_false_alert1 and not is_false_alert2:
+            record("News Engine", "Emergency Alert Discrimination", "PASS", "True road closures trigger alert, general news & history blocked")
+        else:
+            record("News Engine", "Emergency Alert Discrimination", "FAIL", f"Filter results: {is_true_alert}, {is_false_alert1}, {is_false_alert2}")
+    except Exception as e:
+        record("News Engine", "Module Execution", "FAIL", str(e))
+
+# ==========================================
+# TEST 13: Driver Keyboard UI
+# ==========================================
+def test_telegram_keyboard():
+    try:
+        from telegram_bot_daemon import MAIN_KEYBOARD
+        buttons_flat = [b["text"] for row in MAIN_KEYBOARD["keyboard"] for b in row]
+        has_location = any(b.get("request_location") for row in MAIN_KEYBOARD["keyboard"] for b in row)
+        has_mechanic = any("Мастер рядом" in t for t in buttons_flat)
+        has_broker = any("Проверить брокера" in t for t in buttons_flat)
+        
+        if has_location and has_mechanic and has_broker:
+            record("Driver Keyboard", "Persistent ReplyKeyboardMarkup", "PASS", "Location GPS button + Mechanic + Broker quick actions active")
+        else:
+            record("Driver Keyboard", "Persistent ReplyKeyboardMarkup", "FAIL", f"Buttons: {buttons_flat}")
+    except Exception as e:
+        record("Driver Keyboard", "Module Execution", "FAIL", str(e))
+
 def run_all():
     print("="*60)
     print("STARTING CAR HAULING DISPATCH HUB FULL SYSTEM AUDIT")
@@ -304,6 +360,9 @@ def run_all():
     test_grounding_verifier()
     test_user_profiler()
     test_telegram_formatter()
+    test_model_router()
+    test_news_frequency()
+    test_telegram_keyboard()
     print("="*60)
     
     passed = sum(1 for t in test_results if t["status"] == "PASS")

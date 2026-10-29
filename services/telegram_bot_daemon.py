@@ -39,6 +39,27 @@ from broker_verifier import verify_broker
 from claim_generator import handle_claim_command
 from overhang_advisor import get_overhang_guide
 from repair_service import handle_repair_inquiry
+from model_router import start_metrics_server, query_model_with_failover
+
+# Persistent Quick Action Keyboard for Car Haulers
+MAIN_KEYBOARD = {
+    "keyboard": [
+        [
+            {"text": "⛽ Скинуть точку на дизель 📍", "request_location": True},
+            {"text": "🔧 Мастер рядом"}
+        ],
+        [
+            {"text": "🏢 Проверить брокера"},
+            {"text": "⚖️ Свесы и весы (FAST Act)"}
+        ],
+        [
+            {"text": "📋 Шаблоны клеймов"},
+            {"text": "👤 Мой профиль"}
+        ]
+    ],
+    "resize_keyboard": True,
+    "is_persistent": True
+}
 
 # Config & Credentials loaded securely from Environment Variables
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -92,6 +113,8 @@ def send_telegram_message(chat_id, text, reply_to_message_id=None, message_threa
         payload["message_thread_id"] = message_thread_id
     if reply_markup is not None:
         payload["reply_markup"] = reply_markup
+    elif str(chat_id) != str(ADMIN_CHAT_ID) and str(chat_id) != str(CHANNEL_ID):
+        payload["reply_markup"] = MAIN_KEYBOARD
     
     url = f"{API_URL}/sendMessage"
     try:
@@ -131,6 +154,8 @@ def edit_telegram_message(chat_id, message_id, text, reply_markup=None):
     }
     if reply_markup is not None:
         payload["reply_markup"] = reply_markup
+    elif str(chat_id) != str(ADMIN_CHAT_ID) and str(chat_id) != str(CHANNEL_ID):
+        payload["reply_markup"] = MAIN_KEYBOARD
     url = f"{API_URL}/editMessageText"
     try:
         req = urllib.request.Request(
@@ -235,49 +260,30 @@ def ask_gemini(user_message, chat_id=None):
     if not sanitized_contents:
         sanitized_contents = [{"role": "user", "parts": [{"text": user_message}]}]
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key={GEMINI_KEY}"
-    payload = {
-        "system_instruction": {
-            "parts": [{"text": system_instruction_text}]
-        },
-        "contents": sanitized_contents,
-        "generationConfig": {
-            "temperature": 0.2,
-            "maxOutputTokens": 2048,
-            "thinkingConfig": {
-                "thinkingBudget": 0
-            }
-        }
-    }
-    req = urllib.request.Request(
-        url,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"}
-    )
+    # Use Dynamic Model Router with 429 Circuit Breaker & Failover
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            data = json.loads(resp.read().decode())
-            candidates = data.get("candidates", [])
-            if candidates:
-                parts = candidates[0].get("content", {}).get("parts", [])
-                if parts:
-                    answer_text = parts[0].get("text", "")
-                    if answer_text:
-                        try:
-                            try:
-                                from services.grounding_verifier import multi_agent_sense_check
-                            except ImportError:
-                                from grounding_verifier import multi_agent_sense_check
-                            answer_text = multi_agent_sense_check(answer_text, context_type="general")
-                        except Exception:
-                            pass
-                    if chat_id and answer_text:
-                        record_chat_turn(chat_id, "model", answer_text)
-                    return answer_text
-            return "Принял. Уточни запрос (город, штат, номер трассы или MC брокера) — выдам точные данные."
+        raw_text, model_used = query_model_with_failover(
+            user_message, 
+            system_prompt=system_instruction_text, 
+            context_type="general"
+        )
+        if raw_text:
+            try:
+                try:
+                    from services.grounding_verifier import multi_agent_sense_check
+                except ImportError:
+                    from grounding_verifier import multi_agent_sense_check
+                answer_text = multi_agent_sense_check(raw_text, context_type="general")
+            except Exception:
+                answer_text = raw_text
+
+            if chat_id and answer_text:
+                record_chat_turn(chat_id, "model", answer_text)
+            return answer_text
     except Exception as e:
-        print(f"[ERROR] Gemini API error: {e}")
-        return "Диспетчер на связи. Уточни локацию, MC брокера или технический вопрос — проверяю данные."
+        print(f"[ERROR] Dynamic Model Router execution error: {e}")
+
+    return "Диспетчер на связи. Уточни локацию, MC брокера или технический вопрос — проверяю данные."
 
 def process_message(msg):
     chat = msg.get("chat", {})
@@ -452,7 +458,7 @@ def process_message(msg):
     # Repair & Confidential Mechanics Directory
     is_repair_inquiry = (
         text.startswith("/repair") or
-        text.strip().lower() in ["ремонт", "механик", "мастер", "починить", "сломался"] or
+        text.strip().lower() in ["ремонт", "механик", "мастер", "починить", "сломался", "мастер рядом", "🔧 мастер рядом"] or
         any(k in text.lower() for k in [
             "лопнул шланг", "течет гидравлика", "вытек цилиндр", "нужен механик",
             "нужен ремонт", "сломалась рампа", "нужен сварщик", "найти мастера",
@@ -476,13 +482,23 @@ def process_message(msg):
         return
 
     # Claim & Legal Generator
-    if text.startswith("/claim") or text.startswith("/detention") or text.startswith("/tonu"):
+    if text.startswith("/claim") or text.startswith("/detention") or text.startswith("/tonu") or text.strip() in ["📋 Шаблоны клеймов", "шаблоны клеймов", "клеймы"]:
+        if text.strip() in ["📋 Шаблоны клеймов", "шаблоны клеймов", "клеймы", "/claim"]:
+            claims_menu = (
+                "📋 <b>Официальные претензии брокерам (1-tap копирование):</b>\n\n"
+                "• <code>/detention</code> — Простой ($75/час после 2 часов бесплатного ожидания)\n"
+                "• <code>/tonu</code> — Срыв погрузки TONU ($150–$250 компенсация)\n"
+                "• <code>/inop</code> — Доплата за погрузку неходового авто ($150)\n\n"
+                "<i>Нажми на нужную команду для получения готового текста сообщения брокеру.</i>"
+            )
+            send_telegram_message(chat_id, claims_menu, reply_to_message_id=msg_id)
+            return
         claim_card = handle_claim_command(text)
         send_telegram_message(chat_id, claim_card, reply_to_message_id=msg_id)
         return
 
     # Overhang & Limits Advisor
-    if text.startswith("/overhang") or text.lower().startswith("свес") or text.lower().startswith("свесы"):
+    if text.startswith("/overhang") or text.lower().startswith("свес") or "свесы" in text.lower():
         parts = text.split()
         st = parts[1] if len(parts) > 1 else None
         if not st:
@@ -494,13 +510,21 @@ def process_message(msg):
         return
 
     # Broker & MC Verification
-    if text.startswith("/broker") or text.lower().startswith("проверь брокера") or text.lower().startswith("проверка брокера"):
+    if text.startswith("/broker") or text.lower().startswith("проверь брокера") or text.lower().startswith("проверка брокера") or text.strip() == "🏢 Проверить брокера":
         parts = text.split(maxsplit=1)
         query = parts[1] if len(parts) > 1 else ""
         if not query:
             m = re.search(r'(?:проверь|проверка)\s+брокера\s*(.*)', text, re.IGNORECASE)
             if m:
                 query = m.group(1).strip()
+        if not query:
+            prompt_text = (
+                "🏢 <b>Проверка брокера и MC:</b>\n\n"
+                "Напиши номер MC (например: <code>MC 1045231</code>) или название компании (например: <code>TQL</code>) — "
+                "проверю статус бонда BMC-84 ($75k), дни оплаты (DTP), одобрение факторингом и риски дабл-брокеринга."
+            )
+            send_telegram_message(chat_id, prompt_text, reply_to_message_id=msg_id)
+            return
         send_chat_action(chat_id, "typing")
         broker_card = verify_broker(query)
         send_telegram_message(chat_id, broker_card, reply_to_message_id=msg_id)
@@ -856,6 +880,10 @@ def setup_telegram_commands():
 
 def run_bot():
     print(f"[START] Starting Telegram Bot Daemon for @CarHaulerSOS_bot...")
+    try:
+        start_metrics_server(port=8000)
+    except Exception as me:
+        print(f"[WARN] Failed to start Prometheus metrics server: {me}")
     setup_telegram_commands()
     init_fuel_session_db()
     try:

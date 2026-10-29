@@ -50,11 +50,61 @@ FEEDS = [
     }
 ]
 
-ALERT_KEYWORDS = [
-    "crash", "closed", "shut down", "overturned", "pileup", "chains required",
-    "high wind", "blowover", "inspection", "blitz", "weigh station", "low clearance",
-    "bridge strike", "detour", "jackknife", "blizzard", "icy", "road closure"
-]
+HIGHWAY_CORRIDOR_REGEX = re.compile(
+    r'\b(I-\d{1,2}|I\d{1,2}|Interstate\s*\d{1,2}|US-\d{1,3}|Hwy\s*\d+|'
+    r'Donner\s*Pass|Elk\s*Mountain|Cabbage\s*Hill|Vail\s*Pass|Snoqualmie|Cajon\s*Pass|'
+    r'Turnpike|Parkway|Wyoming|Colorado|Oregon|California|Nebraska)\b',
+    re.IGNORECASE
+)
+ROAD_CLOSURE_REGEX = re.compile(
+    r'\b(closed|closure|shut\s*down|chains?\s*required|pileup|blizzard|blow-?overs?|jackknife|blocked|detour|no\s*unnecessary\s*travel)\b',
+    re.IGNORECASE
+)
+
+def is_true_road_emergency(title: str, content: str) -> bool:
+    """
+    Strict filter for breaking road alerts: MUST identify a highway/pass AND an active closure or severe hazard.
+    Does not match routine accidents, historical articles, or court cases.
+    """
+    text = f"{title} {content[:400]}"
+    has_corridor = bool(HIGHWAY_CORRIDOR_REGEX.search(text))
+    has_closure = bool(ROAD_CLOSURE_REGEX.search(text))
+    not_retrospective = not any(w in text.lower() for w in [
+        "sentenced", "pleads guilty", "lawsuit", "obituary", "memorial", "years in prison", "years later", "investigation continues"
+    ])
+    return has_corridor and has_closure and not_retrospective
+
+def can_publish_news() -> bool:
+    """
+    Enforces user requirement: Strictly 2-3 news posts per day, spaced out by at least 7 hours.
+    """
+    try:
+        import psycopg2
+        conn = psycopg2.connect(host=PG_HOST, port=PG_PORT, user=PG_USER, password=PG_PASS, dbname=PG_DB)
+        cur = conn.cursor()
+        cur.execute("SELECT count(*) FROM telegram_posts WHERE post_type = 'news' AND published_at > NOW() - INTERVAL '24 hours';")
+        daily_count = cur.fetchone()[0]
+        cur.execute("SELECT published_at FROM telegram_posts WHERE post_type = 'news' ORDER BY published_at DESC LIMIT 1;")
+        row = cur.fetchone()
+        conn.close()
+
+        if daily_count >= 3:
+            print(f"[NEWS] Daily news quota reached ({daily_count}/3 in last 24h). Skipping.")
+            return False
+
+        if row and row[0]:
+            from datetime import datetime, timezone
+            last_pub = row[0]
+            if last_pub.tzinfo is None:
+                last_pub = last_pub.replace(tzinfo=timezone.utc)
+            delta_hours = (datetime.now(timezone.utc) - last_pub).total_seconds() / 3600.0
+            if delta_hours < 7.0:
+                print(f"[NEWS] News cooldown active (last post was {delta_hours:.1f}h ago, min 7h). Skipping.")
+                return False
+        return True
+    except Exception as e:
+        print(f"[WARN] Error checking news limit: {e}")
+        return True
 
 def init_db():
     conn = sqlite3.connect(DB_PATH)
@@ -442,7 +492,10 @@ def publish_road_alert_directly(post_id, title, text, source_url=None, source_na
     return True
 
 def run_news_pipeline():
-    print(f"[{datetime.now()}] [NEWS PIPELINE] Checking for high-impact car hauler news...")
+    if not can_publish_news():
+        return
+
+    print(f"[{datetime.now()}] [NEWS PIPELINE] Checking for high-impact car hauler news (quota 2-3/day)...")
     items = fetch_feed_items()
     for item in items:
         if is_processed(item["guid"]):
@@ -470,18 +523,15 @@ def run_news_pipeline():
                 print(f"[FAIL] Could not send to Cabinet: {item['title']}")
 
 def run_alerts_pipeline():
-    print(f"[{datetime.now()}] [ALERTS PIPELINE] Scanning for highway incidents & road closures...")
+    print(f"[{datetime.now()}] [ALERTS PIPELINE] Scanning for severe highway incidents & road closures...")
     items = fetch_feed_items()
     count = 0
     for item in items:
         if is_processed(item["guid"]):
             continue
 
-        title_lower = item["title"].lower()
-        content_lower = item["content"].lower()
-
-        is_alert = any(kw in title_lower or kw in content_lower for kw in ALERT_KEYWORDS)
-        if not is_alert:
+        # Strict highway emergency filter
+        if not is_true_road_emergency(item["title"], item["content"]):
             continue
 
         print(f"[CRITICAL ROAD ALERT] {item['title']}")
