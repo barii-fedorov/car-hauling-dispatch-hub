@@ -142,7 +142,10 @@ def edit_telegram_message(chat_id, message_id, text, reply_markup=None):
             return json.loads(resp.read().decode())
     except urllib.error.HTTPError as he:
         try:
-            print(f"[WARN] HTML editMessageText failed ({he}), falling back to stripped text...")
+            err_body = he.read().decode()
+            if "message is not modified" in err_body:
+                return {"ok": True, "result": "not_modified"}
+            print(f"[WARN] HTML editMessageText failed ({he}: {err_body}), falling back to stripped text...")
             payload["text"] = strip_html_tags(html_text)
             payload.pop("parse_mode", None)
             req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers={"Content-Type": "application/json"})
@@ -155,7 +158,7 @@ def edit_telegram_message(chat_id, message_id, text, reply_markup=None):
     return None
 
 def ask_gemini_direct(prompt):
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_KEY}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key={GEMINI_KEY}"
     payload = {
         "contents": [{"role": "user", "parts": [{"text": prompt}]}],
         "generationConfig": {"temperature": 0.2, "maxOutputTokens": 800}
@@ -226,7 +229,7 @@ def ask_gemini(user_message, chat_id=None):
     if not sanitized_contents:
         sanitized_contents = [{"role": "user", "parts": [{"text": user_message}]}]
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_KEY}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key={GEMINI_KEY}"
     payload = {
         "system_instruction": {
             "parts": [{"text": system_instruction_text}]
