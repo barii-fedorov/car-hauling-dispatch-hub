@@ -32,7 +32,7 @@ from user_profiler import (
     reset_user_profile_data
 )
 from route_advisor import analyze_car_hauler_route, reverse_geocode_osm
-from broker_verifier import verify_broker
+from broker_verifier import verify_broker, verify_company, verify_carrier
 from claim_generator import handle_claim_command, CLAIMS_INLINE_KEYBOARD
 from overhang_advisor import get_overhang_guide
 from repair_service import handle_repair_inquiry
@@ -46,7 +46,7 @@ MAIN_KEYBOARD = {
             {"text": "🔧 Мастер рядом"}
         ],
         [
-            {"text": "🏢 Проверить брокера"},
+            {"text": "🏢 Проверить брокера / DOT"},
             {"text": "⚖️ Свесы и весы (FAST Act)"}
         ],
         [
@@ -545,7 +545,8 @@ def process_message(msg):
             "Прикрываю автовозников на дороге 24/7 по любым вопросам: анализ маршрута, расход солярки, ремонт автовозов и клиентских авто, споры с брокерами, свесы и весовые.\n\n"
             "• 🛣️ <code>/route</code> — Анализ маршрута: километраж, солярка, скидки по картам, IFTA и весы\n"
             "• 🔧 <code>/repair</code> — Мастер рядом: ремонт автовоза (гидравлика/сварка) и скрытый ремонт авто клиента (PDR/царапины)\n"
-            "• 🏢 <code>/broker MC#</code> — Проверка брокера, бонда $75,000, дней оплаты и факторинга\n"
+            "• 🏢 <code>/broker MC#</code> — Проверка брокера: бонд $75,000 BMC-84, дни оплаты (DTP) и факторинг\n"
+            "• 🚛 <code>/carrier DOT#</code> — Проверка перевозчика: статус Operating Authority, страховка $1M, OOS-рейтинг\n"
             "• ⚖️ <code>/overhang [Штат]</code> — Допустимые свесы по FAST Act (4ft/6ft), высота 13'6\"/14'0\" и весы POE\n"
             "• 📋 <code>/claim</code> — Претензии в 1 клик: Детеншен ($75/ч), TONU ($250), In-Op ($150)\n"
             "• 👤 <code>/profile</code> — Сетап (Стингер/Виджик) и топливная карта (Mudflap, RTS, TCS)\n\n"
@@ -560,7 +561,8 @@ def process_message(msg):
             "🆘 <b>ДИСПЕТЧЕРСКАЯ ПОМОЩЬ И КОМАНДЫ БОТА:</b>\n\n"
             "• 🛣️ <code>/route</code> — Анализ маршрута: километраж, солярка, скидка по карте, IFTA и весы\n"
             "• 🔧 <code>/repair</code> — Выездные мастера для трака (Cash/без DOT) и скрытый ремонт авто клиента (PDR/царапины)\n"
-            "• 🏢 <code>/broker MC#</code> — Проверка брокера, бонда $75,000 и срока оплаты\n"
+            "• 🏢 <code>/broker MC#</code> — Проверка брокера, бонда $75,000 и срока оплаты (DTP)\n"
+            "• 🚛 <code>/carrier DOT#</code> — Проверка перевозчика: статус Authority, страховка $1M, OOS и безопасность\n"
             "• ⚖️ <code>/overhang [Штат]</code> — Свесы FAST Act, высоты мостов и активные весовые станции\n"
             "• 📋 <code>/claim</code> — Претензии: Детеншен ($75/ч), TONU ($250), неходовые авто ($150)\n"
             "• 👤 <code>/profile</code> — Твой сетап и топливная карта со скидкой\n"
@@ -638,28 +640,47 @@ def process_message(msg):
         record_chat_turn(chat_id, "model", prompt_text)
         return
 
-    # Broker & MC Verification
-    if text.startswith("/broker") or text.lower().startswith("проверь брокера") or text.lower().startswith("проверка брокера") or text.strip() == "🏢 Проверить брокера":
+    # Broker & Carrier (MC / DOT) Verification
+    is_company_command = (
+        text.startswith("/broker") or
+        text.startswith("/carrier") or
+        text.startswith("/dot") or
+        text.strip() in [
+            "🏢 Проверить брокера / DOT", "🏢 Проверить брокера", "🏢 Проверка MC / DOT",
+            "🏢 Проверить компанию", "🏢 Проверить перевозчика", "проверить брокера",
+            "проверить перевозчика", "проверка перевозчика", "проверка дот", "проверить dot",
+            "проверить mc", "проверка mc"
+        ] or
+        any(text.lower().startswith(p) for p in [
+            "проверь брокера", "проверка брокера",
+            "проверь перевозчика", "проверка перевозчика",
+            "проверь компанию", "проверка компании",
+            "проверь dot", "проверь mc", "проверка dot", "проверка mc"
+        ])
+    )
+    if is_company_command:
         parts = text.split(maxsplit=1)
-        query = parts[1] if (len(parts) > 1 and text.startswith("/broker")) else ""
-        if not query and not text.strip().startswith("/broker") and text.strip() != "🏢 Проверить брокера":
-            m = re.search(r'(?:проверь|проверка)\s+брокера\s*(.*)', text, re.IGNORECASE)
+        query = parts[1] if (len(parts) > 1 and any(text.startswith(c) for c in ["/broker", "/carrier", "/dot"])) else ""
+        if not query:
+            m = re.search(r'(?:проверь|проверка)\s+(?:брокера|перевозчика|компанию|dot|mc)\s*(.*)', text, re.IGNORECASE)
             if m:
                 query = m.group(1).strip()
         if not query:
-            set_driver_session(chat_id, state="awaiting_broker_query")
+            set_driver_session(chat_id, state="awaiting_company_query")
             prompt_text = (
-                "🏢 <b>Проверка брокера и MC:</b>\n\n"
-                "Напиши номер MC (например: <code>MC 1045231</code>), название компании (например: <code>TQL</code>) "
-                "или скопируй шапку из Rate Confirmation —\n"
-                "проверю статус бонда BMC-84 ($75k), дни оплаты (DTP), одобрение факторингом и риски дабл-брокеринга."
+                "🏢 <b>Проверка компании (Брокер по MC / Перевозчик по DOT):</b>\n\n"
+                "• <b>Проверка брокера:</b> отправь номер MC (например: <code>MC 1045231</code>) или название (например: <code>TQL</code>) — "
+                "проверю статус бонда BMC-84 ($75k), дни оплаты (DTP), одобрение факторингом и риски дабл-брокеринга.\n\n"
+                "• <b>Проверка перевозчика:</b> отправь номер USDOT (например: <code>DOT 3892104</code>) или название компании — "
+                "проверю статус Operating Authority, страховку $1M, OOS-рейтинг безопасности (Out of Service) и риск хамелеона."
             )
             send_telegram_message(chat_id, prompt_text, reply_to_message_id=msg_id, reply_markup=MAIN_KEYBOARD)
+            record_chat_turn(chat_id, "model", prompt_text)
             return
         send_chat_action(chat_id, "typing")
-        broker_card = verify_broker(query)
-        send_telegram_message(chat_id, broker_card, reply_to_message_id=msg_id, reply_markup=MAIN_KEYBOARD)
-        record_chat_turn(chat_id, "model", broker_card)
+        company_card = verify_company(query)
+        send_telegram_message(chat_id, company_card, reply_to_message_id=msg_id, reply_markup=MAIN_KEYBOARD)
+        record_chat_turn(chat_id, "model", company_card)
         return
 
     # Route & Fuel Strategic Analysis command
@@ -767,7 +788,7 @@ def process_message(msg):
     if session_state in [
         "awaiting_route_details", "awaiting_route_destination", "awaiting_fuel_details",
         "awaiting_repair_inquiry", "awaiting_repair_location", "awaiting_repair_problem",
-        "awaiting_overhang_location", "awaiting_broker_query"
+        "awaiting_overhang_location", "awaiting_broker_query", "awaiting_company_query"
     ]:
         is_conversational = any(w in text.lower() for w in [
             "ты же", "знаешь", "в профиле", "с чего", "почему", "откуда",
@@ -817,13 +838,13 @@ def process_message(msg):
                 send_telegram_message(chat_id, overhang_card, reply_to_message_id=msg_id, reply_markup=MAIN_KEYBOARD)
                 return
 
-            # 4. Broker query follow-up
-            if session_state == "awaiting_broker_query":
+            # 4. Broker / Carrier query follow-up
+            if session_state in ["awaiting_broker_query", "awaiting_company_query"]:
                 set_driver_session(chat_id, state="idle")
                 send_chat_action(chat_id, "typing")
-                broker_card = verify_broker(text)
-                record_chat_turn(chat_id, "model", broker_card)
-                send_telegram_message(chat_id, broker_card, reply_to_message_id=msg_id, reply_markup=MAIN_KEYBOARD)
+                company_card = verify_company(text)
+                record_chat_turn(chat_id, "model", company_card)
+                send_telegram_message(chat_id, company_card, reply_to_message_id=msg_id, reply_markup=MAIN_KEYBOARD)
                 return
 
             # 5. Route Destination follow-up
@@ -864,6 +885,15 @@ def process_message(msg):
         )
         record_chat_turn(chat_id, "model", route_answer)
         send_telegram_message(chat_id, route_answer, reply_to_message_id=msg_id, reply_markup=MAIN_KEYBOARD)
+        return
+
+    # D. Direct Broker (MC#) or Carrier (USDOT#) query in free-form text
+    is_direct_mc_or_dot = bool(re.search(r'\b(?:MC|DOT|USDOT)\s*#?\s*\d{5,8}\b', text, re.IGNORECASE))
+    if is_direct_mc_or_dot and not any(k in text.lower() for k in ["маршрут", "солярк", "ремонт", "клейм", "детеншен"]):
+        send_chat_action(chat_id, "typing")
+        company_card = verify_company(text)
+        record_chat_turn(chat_id, "model", company_card)
+        send_telegram_message(chat_id, company_card, reply_to_message_id=msg_id, reply_markup=MAIN_KEYBOARD)
         return
 
     # Indicate typing to user
@@ -1102,6 +1132,7 @@ def setup_telegram_commands():
         {"command": "route", "description": "🛣️ Анализ маршрута и солярки"},
         {"command": "repair", "description": "🔧 Мастер рядом (трак или авто клиента)"},
         {"command": "broker", "description": "🏢 Проверка брокера по MC ($75k бонд)"},
+        {"command": "carrier", "description": "🚛 Проверка перевозчика по USDOT (Authority, OOS)"},
         {"command": "overhang", "description": "⚖️ Свесы и весы (FAST Act)"},
         {"command": "claim", "description": "📋 Претензии: Детеншен, TONU, In-Op"},
         {"command": "profile", "description": "👤 Мой сетап и топливная карта"},
