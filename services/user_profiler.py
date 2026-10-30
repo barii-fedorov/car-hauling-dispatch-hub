@@ -1,9 +1,8 @@
 """
 User Profiler Module
 Tracks and dynamically updates car hauler driver profiles in PostgreSQL.
-Maintains role, confidence levels, rig equipment, corridor preferences,
-GDPR-safe indicator flags (is_owner, has_phone, has_mc, has_equipment),
-and provides memory context to AI so users feel the bot remembers them.
+Maintains role, confidence levels, rig equipment, fuel discount programs (Mudflap, RTS, TCS, NASTC),
+corridor preferences, GDPR-safe indicator flags, and provides memory context to AI so users feel the bot remembers them.
 """
 
 import os
@@ -17,6 +16,14 @@ PG_USER = os.environ.get("POSTGRES_USER", "dispatch_admin")
 PG_PASS = os.environ.get("POSTGRES_PASSWORD", "DispatchSecurePass2026!_pg")
 PG_DB = os.environ.get("POSTGRES_DB", "dispatch_hub")
 
+STANDARD_DISCOUNTS = {
+    "Mudflap": 0.45,
+    "RTS Pro": 0.50,
+    "TCS Fuel": 0.40,
+    "NASTC": 0.60,
+    "Без карты (Retail)": 0.00
+}
+
 def get_db_connection():
     return psycopg2.connect(host=PG_HOST, port=PG_PORT, user=PG_USER, password=PG_PASS, dbname=PG_DB)
 
@@ -29,13 +36,15 @@ def get_or_create_user_profile(telegram_id: int) -> dict:
             SELECT telegram_id, user_role, role_confidence, truck_type, truck_confidence,
                    typical_cargo, primary_corridor, primary_state, satisfaction_score,
                    has_owner_status, has_phone_info, has_mc_info, has_equipment_info,
-                   interaction_count, notes_summary
+                   interaction_count, notes_summary, fuel_card, fuel_discount
             FROM user_profiles WHERE telegram_id = %s;
         """, (telegram_id,))
         row = cur.fetchone()
         if row:
             cur.close()
             conn.close()
+            f_card = row[15] or "Mudflap"
+            f_disc = float(row[16] if row[16] is not None else STANDARD_DISCOUNTS.get(f_card, 0.45))
             return {
                 "telegram_id": row[0],
                 "user_role": row[1],
@@ -51,7 +60,9 @@ def get_or_create_user_profile(telegram_id: int) -> dict:
                 "has_mc_info": bool(row[11]),
                 "has_equipment_info": bool(row[12]),
                 "interaction_count": int(row[13] or 1),
-                "notes_summary": row[14] or ""
+                "notes_summary": row[14] or "",
+                "fuel_card": f_card,
+                "fuel_discount": f_disc
             }
 
         # Create new default profile
@@ -59,9 +70,9 @@ def get_or_create_user_profile(telegram_id: int) -> dict:
             INSERT INTO user_profiles (telegram_id, user_role, role_confidence, truck_type, truck_confidence,
                                       typical_cargo, primary_corridor, primary_state, satisfaction_score,
                                       has_owner_status, has_phone_info, has_mc_info, has_equipment_info,
-                                      interaction_count, notes_summary, first_seen_at, last_active_at)
+                                      interaction_count, notes_summary, fuel_card, fuel_discount, first_seen_at, last_active_at)
             VALUES (%s, 'Не определена', 0.20, 'Неизвестно', 0.00, 'Не указан', 'Вся территория США', 'US', 0.90,
-                    FALSE, FALSE, FALSE, FALSE, 1, 'Новый пользователь', NOW(), NOW())
+                    FALSE, FALSE, FALSE, FALSE, 1, 'Новый пользователь', 'Mudflap', 0.45, NOW(), NOW())
             ON CONFLICT (telegram_id) DO NOTHING;
         """, (telegram_id,))
         conn.commit()
@@ -82,7 +93,9 @@ def get_or_create_user_profile(telegram_id: int) -> dict:
             "has_mc_info": False,
             "has_equipment_info": False,
             "interaction_count": 1,
-            "notes_summary": "Новый пользователь"
+            "notes_summary": "Новый пользователь",
+            "fuel_card": "Mudflap",
+            "fuel_discount": 0.45
         }
     except Exception as e:
         print(f"[WARN] Error in get_or_create_user_profile: {e}")
@@ -103,7 +116,9 @@ def get_or_create_user_profile(telegram_id: int) -> dict:
             "has_mc_info": False,
             "has_equipment_info": False,
             "interaction_count": 1,
-            "notes_summary": ""
+            "notes_summary": "",
+            "fuel_card": "Mudflap",
+            "fuel_discount": 0.45
         }
 
 def analyze_and_update_profile(telegram_id: int, text: str = "", location_str: str = None) -> dict:
@@ -127,6 +142,23 @@ def analyze_and_update_profile(telegram_id: int, text: str = "", location_str: s
         updates["truck_type"] = "Хай-маунт 7-8 авто"
         updates["truck_confidence"] = 0.90
         updates["has_equipment_info"] = True
+
+    # 1b. Fuel Discount Card / Program Detection
+    if any(k in text_lower for k in ["mudflap", "мадфлап", "мудфлап"]):
+        updates["fuel_card"] = "Mudflap"
+        updates["fuel_discount"] = 0.45
+    elif any(k in text_lower for k in ["rts", "rts pro", "ртс"]):
+        updates["fuel_card"] = "RTS Pro"
+        updates["fuel_discount"] = 0.50
+    elif any(k in text_lower for k in ["tcs", "ткс"]):
+        updates["fuel_card"] = "TCS Fuel"
+        updates["fuel_discount"] = 0.40
+    elif any(k in text_lower for k in ["nastc", "настк"]):
+        updates["fuel_card"] = "NASTC"
+        updates["fuel_discount"] = 0.60
+    elif any(k in text_lower for k in ["без карты", "кэш", "cash", "нет карты", "без скидок", "по чеку", "карты нет"]):
+        updates["fuel_card"] = "Без карты (Retail)"
+        updates["fuel_discount"] = 0.00
 
     # 2. Role / Owner Status Detection
     if any(k in text_lower for k in ["я оунер", "оунер-оператор", "мой трак", "свой трак", "купил трак", "оунерю", "owner-operator", "owner"]):
@@ -190,11 +222,14 @@ def analyze_and_update_profile(telegram_id: int, text: str = "", location_str: s
     truck = updates.get("truck_type", profile["truck_type"])
     corridor = updates.get("primary_corridor", profile["primary_corridor"])
     cargo = updates.get("typical_cargo", profile["typical_cargo"])
+    card = updates.get("fuel_card", profile.get("fuel_card", "Mudflap"))
 
     if role != "Не определена":
         notes_parts.append(f"Роль: {role}")
     if truck != "Неизвестно":
         notes_parts.append(f"Сетап: {truck}")
+    if card:
+        notes_parts.append(f"Топливо: {card}")
     if cargo != "Не указан":
         notes_parts.append(f"Груз: {cargo}")
     if corridor != "Вся территория США":
@@ -235,10 +270,15 @@ def get_profile_ai_context(telegram_id: int) -> str:
     truck = profile.get("truck_type", "Неизвестно")
     cargo = profile.get("typical_cargo", "Не указан")
     corridor = profile.get("primary_corridor", "США")
+    fuel_card = profile.get("fuel_card", "Mudflap")
+    fuel_discount = float(profile.get("fuel_discount", 0.45))
 
     context = "ИНФОРМАЦИЯ О ВОДИТЕЛЕ (не переспрашивай то, что уже известно):\n"
     if truck not in [None, "Неизвестно", "Не указан"]:
         context += f"• Сетап/Трак: {truck}\n"
+    if fuel_card:
+        disc_text = f"~${fuel_discount:.2f}/gal" if fuel_discount > 0 else "0¢ (розница)"
+        context += f"• Топливная карта / Скидка: {fuel_card} ({disc_text})\n"
     if role not in [None, "Не определена"]:
         context += f"• Роль: {role}\n"
     if corridor != "Вся территория США":
@@ -248,29 +288,60 @@ def get_profile_ai_context(telegram_id: int) -> str:
 
 def format_user_profile_card(telegram_id: int) -> tuple:
     """
-    Renders a clean, practical equipment card for /profile without internal trust metrics or role badgering.
+    Renders a clean, practical equipment and fuel card profile for /profile.
     """
     profile = get_or_create_user_profile(telegram_id)
     truck = profile.get("truck_type", "Не указан")
+    fuel_card = profile.get("fuel_card", "Mudflap")
+    fuel_discount = float(profile.get("fuel_discount", 0.45))
     
+    disc_str = f"~${fuel_discount:.2f}/gal" if fuel_discount > 0 else "0¢ (розница)"
+
+    is_stinger = "Стингер" in truck
+    is_wedge = "Виджик" in truck or "Пикап" in truck
+    is_highmount = "Хай-маунт" in truck
+
     text = (
-        f"🚛 <b>Твой текущий сетап:</b> <b>{truck}</b>\n\n"
-        f"<i>Сетап учитывается при расчете высоты навесов, заездов на трак-стопы и правил по свесам. "
-        f"Если пересел на другую машину — нажми кнопку ниже:</i>"
+        f"👤 <b>Профиль кархолера / Сетап & Скидки</b>\n\n"
+        f"🚛 <b>Текущий сетап:</b> <b>{truck}</b>\n"
+        f"💳 <b>Топливная программа:</b> <b>{fuel_card}</b> (скидка {disc_str})\n\n"
+        f"<i>Эти параметры бот автоматически учитывает для анализа маршрутов, расчета реального расхода солярки, "
+        f"IFTA-оптимизации и предупреждений о перевесе перед весовыми станциями.</i>\n\n"
+        f"<b>Переключить сетап или карту:</b>"
     )
 
     reply_markup = {
         "inline_keyboard": [
             [
-                {"text": "🚛 Стингер 9-кар", "callback_data": "setrig_stinger"},
-                {"text": "🛻 Пикап + Виджик", "callback_data": "setrig_wedge"}
+                {"text": f"{'✅ ' if is_stinger else ''}🚛 Стингер 9-кар", "callback_data": "setrig_stinger"},
+                {"text": f"{'✅ ' if is_wedge else ''}🛻 Пикап + Виджик", "callback_data": "setrig_wedge"}
+            ],
+            [
+                {"text": f"{'✅ ' if is_highmount else ''}🚙 Хай-маунт 7-8", "callback_data": "setrig_highmount"}
+            ],
+            [
+                {"text": f"{'✅ ' if fuel_card == 'Mudflap' else ''}💳 Mudflap (~45¢)", "callback_data": "setcard_mudflap"},
+                {"text": f"{'✅ ' if fuel_card == 'RTS Pro' else ''}💳 RTS Pro (~50¢)", "callback_data": "setcard_rts"}
+            ],
+            [
+                {"text": f"{'✅ ' if fuel_card == 'TCS Fuel' else ''}💳 TCS (~40¢)", "callback_data": "setcard_tcs"},
+                {"text": f"{'✅ ' if fuel_card == 'NASTC' else ''}💳 NASTC (~60¢)", "callback_data": "setcard_nastc"},
+                {"text": f"{'✅ ' if 'Без карты' in fuel_card else ''}💵 Без скидок", "callback_data": "setcard_none"}
             ]
         ]
     }
     return text, reply_markup
 
 def set_manual_rig(telegram_id: int, rig_choice: str) -> dict:
-    rig_name = "Стингер 9-кар (Class 8)" if rig_choice == "stinger" else "Пикап + Виджик 3-4 авто"
+    if rig_choice == "stinger":
+        rig_name = "Стингер 9-кар (Class 8)"
+    elif rig_choice == "wedge":
+        rig_name = "Пикап + Виджик 3-4 авто"
+    elif rig_choice == "highmount":
+        rig_name = "Хай-маунт 7-8 авто"
+    else:
+        rig_name = "Стингер 9-кар (Class 8)"
+
     conn = None
     try:
         conn = get_db_connection()
@@ -289,6 +360,32 @@ def set_manual_rig(telegram_id: int, rig_choice: str) -> dict:
             conn.close()
     return get_or_create_user_profile(telegram_id)
 
+def set_manual_fuel_card(telegram_id: int, card_choice: str) -> dict:
+    card_map = {
+        "mudflap": ("Mudflap", 0.45),
+        "rts": ("RTS Pro", 0.50),
+        "tcs": ("TCS Fuel", 0.40),
+        "nastc": ("NASTC", 0.60),
+        "none": ("Без карты (Retail)", 0.00)
+    }
+    card_name, disc = card_map.get(card_choice, ("Mudflap", 0.45))
+    conn = None
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            UPDATE user_profiles 
+            SET fuel_card = %s, fuel_discount = %s, last_active_at = NOW()
+            WHERE telegram_id = %s;
+        """, (card_name, disc, telegram_id))
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        print(f"[WARN] Error updating manual fuel card: {e}")
+        if conn:
+            conn.close()
+    return get_or_create_user_profile(telegram_id)
 
 def set_manual_role(telegram_id: int, role_choice: str) -> dict:
     role_name = "Оунер-Оператор" if role_choice == "owner" else "Водитель-наймит"
@@ -310,7 +407,6 @@ def set_manual_role(telegram_id: int, role_choice: str) -> dict:
             conn.close()
     return get_or_create_user_profile(telegram_id)
 
-
 def reset_user_profile_data(telegram_id: int) -> dict:
     conn = None
     try:
@@ -321,6 +417,7 @@ def reset_user_profile_data(telegram_id: int) -> dict:
             SET user_role = 'Не определена', role_confidence = 0.20,
                 truck_type = 'Неизвестно', truck_confidence = 0.00,
                 typical_cargo = 'Не указан', primary_corridor = 'Вся территория США',
+                fuel_card = 'Mudflap', fuel_discount = 0.45,
                 has_owner_status = FALSE, has_equipment_info = FALSE,
                 last_active_at = NOW()
             WHERE telegram_id = %s;
@@ -336,6 +433,3 @@ def reset_user_profile_data(telegram_id: int) -> dict:
 
 # Convenience alias
 get_user_profile = get_or_create_user_profile
-
-
-

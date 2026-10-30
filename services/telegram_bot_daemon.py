@@ -19,12 +19,7 @@ from telegram_formatter import markdown_to_telegram_html, strip_html_tags
 from fuel_advisor import (
     init_fuel_session_db,
     get_driver_session,
-    set_driver_session,
-    is_fuel_inquiry,
-    get_fuel_request_prompt,
-    reverse_geocode,
-    extract_setup_and_cargo,
-    generate_fuel_recommendations
+    set_driver_session
 )
 from user_profiler import (
     analyze_and_update_profile,
@@ -33,10 +28,12 @@ from user_profiler import (
     format_user_profile_card,
     set_manual_rig,
     set_manual_role,
+    set_manual_fuel_card,
     reset_user_profile_data
 )
+from route_advisor import analyze_car_hauler_route, reverse_geocode_osm
 from broker_verifier import verify_broker
-from claim_generator import handle_claim_command
+from claim_generator import handle_claim_command, CLAIMS_INLINE_KEYBOARD
 from overhang_advisor import get_overhang_guide
 from repair_service import handle_repair_inquiry
 from model_router import start_metrics_server, query_model_with_failover
@@ -45,7 +42,7 @@ from model_router import start_metrics_server, query_model_with_failover
 MAIN_KEYBOARD = {
     "keyboard": [
         [
-            {"text": "⛽ Скинуть точку на дизель 📍", "request_location": True},
+            {"text": "🛣️ Анализ маршрута и топлива"},
             {"text": "🔧 Мастер рядом"}
         ],
         [
@@ -59,6 +56,33 @@ MAIN_KEYBOARD = {
     ],
     "resize_keyboard": True,
     "is_persistent": True
+}
+
+ROUTE_KEYBOARD = {
+    "keyboard": [
+        [{"text": "📍 Отправить мою гео-точку", "request_location": True}],
+        [{"text": "⬅️ В главное меню"}]
+    ],
+    "resize_keyboard": True,
+    "one_time_keyboard": True
+}
+
+REPAIR_KEYBOARD = {
+    "keyboard": [
+        [{"text": "📍 Отправить мою гео-точку", "request_location": True}],
+        [{"text": "⬅️ В главное меню"}]
+    ],
+    "resize_keyboard": True,
+    "one_time_keyboard": True
+}
+
+OVERHANG_KEYBOARD = {
+    "keyboard": [
+        [{"text": "📍 Проверить свесы по моей гео-точке", "request_location": True}],
+        [{"text": "⬅️ В главное меню"}]
+    ],
+    "resize_keyboard": True,
+    "one_time_keyboard": True
 }
 
 # Config & Credentials loaded securely from Environment Variables
@@ -152,10 +176,9 @@ def edit_telegram_message(chat_id, message_id, text, reply_markup=None):
         "parse_mode": "HTML",
         "disable_web_page_preview": True
     }
-    if reply_markup is not None:
+    # NOTE: Telegram editMessageText only accepts inline_keyboard. Never pass ReplyKeyboardMarkup!
+    if reply_markup is not None and "inline_keyboard" in reply_markup:
         payload["reply_markup"] = reply_markup
-    elif str(chat_id) != str(ADMIN_CHAT_ID) and str(chat_id) != str(CHANNEL_ID):
-        payload["reply_markup"] = MAIN_KEYBOARD
     url = f"{API_URL}/editMessageText"
     try:
         req = urllib.request.Request(
@@ -183,42 +206,133 @@ def edit_telegram_message(chat_id, message_id, text, reply_markup=None):
     return None
 
 def ask_gemini_direct(prompt):
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key={GEMINI_KEY}"
-    payload = {
-        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-        "generationConfig": {
-            "temperature": 0.2,
-            "maxOutputTokens": 2048,
-            "thinkingConfig": {
-                "thinkingBudget": 0
-            }
-        }
-    }
-    req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers={"Content-Type": "application/json"})
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            data = json.loads(resp.read().decode())
-            candidates = data.get("candidates", [])
-            if candidates:
-                parts = candidates[0].get("content", {}).get("parts", [])
-                if parts:
-                    return parts[0].get("text", "").strip()
-    except Exception as e:
-        print(f"[ERROR] Gemini direct call failed: {e}")
-    return None
+        from model_router import query_model_with_failover
+    except ImportError:
+        from services.model_router import query_model_with_failover
+    res, _ = query_model_with_failover(prompt, context_type="general")
+    return res
 
-# In-Memory Multi-Turn Conversation History per chat_id
+# Multi-Turn Conversation History (Memory + PostgreSQL Persistence)
 CHAT_MEMORY = {}  # {chat_id: [{"role": "user"|"model", "text": "..."}]}
+
+def init_chat_history_db():
+    try:
+        import psycopg2
+        conn = psycopg2.connect(host=PG_HOST, port=PG_PORT, user=PG_USER, password=PG_PASS, dbname=PG_DB)
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS driver_chat_history (
+                id SERIAL PRIMARY KEY,
+                chat_id BIGINT NOT NULL,
+                role VARCHAR(16) NOT NULL,
+                content TEXT NOT NULL,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            );
+            CREATE INDEX IF NOT EXISTS idx_driver_chat_hist_cid ON driver_chat_history(chat_id, id DESC);
+        """)
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        print(f"[WARN] init_chat_history_db failed: {e}")
 
 def record_chat_turn(chat_id, role, text):
     if not chat_id or not text:
         return
+    gemini_role = "user" if role == "user" else "model"
     if chat_id not in CHAT_MEMORY:
         CHAT_MEMORY[chat_id] = []
-    gemini_role = "user" if role == "user" else "model"
     CHAT_MEMORY[chat_id].append({"role": gemini_role, "text": text})
-    if len(CHAT_MEMORY[chat_id]) > 10:
-        CHAT_MEMORY[chat_id] = CHAT_MEMORY[chat_id][-10:]
+    if len(CHAT_MEMORY[chat_id]) > 14:
+        CHAT_MEMORY[chat_id] = CHAT_MEMORY[chat_id][-14:]
+
+    # Persist to PostgreSQL asynchronously
+    def _save():
+        try:
+            import psycopg2
+            conn = psycopg2.connect(host=PG_HOST, port=PG_PORT, user=PG_USER, password=PG_PASS, dbname=PG_DB)
+            cur = conn.cursor()
+            cur.execute("""
+                INSERT INTO driver_chat_history (chat_id, role, content)
+                VALUES (%s, %s, %s);
+            """, (chat_id, gemini_role, text))
+            conn.commit()
+            cur.close()
+            conn.close()
+        except Exception:
+            pass
+    import threading
+    threading.Thread(target=_save, daemon=True).start()
+
+def load_chat_history(chat_id, limit=10):
+    if chat_id in CHAT_MEMORY and len(CHAT_MEMORY[chat_id]) >= 2:
+        return CHAT_MEMORY[chat_id][-limit:]
+    # Fetch from PostgreSQL if memory is empty
+    history = []
+    try:
+        import psycopg2
+        conn = psycopg2.connect(host=PG_HOST, port=PG_PORT, user=PG_USER, password=PG_PASS, dbname=PG_DB)
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT role, content FROM (
+                SELECT role, content, id FROM driver_chat_history
+                WHERE chat_id = %s
+                ORDER BY id DESC LIMIT %s
+            ) sub ORDER BY id ASC;
+        """, (chat_id, limit))
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        for r in rows:
+            history.append({"role": r[0], "text": r[1]})
+        if history:
+            CHAT_MEMORY[chat_id] = history
+    except Exception as e:
+        print(f"[WARN] Failed to load chat history from DB: {e}")
+    return history
+
+def get_live_fuel_market_summary() -> str:
+    """Provides certified AAA state diesel prices for grounding dispatcher answers."""
+    try:
+        from aaa_fuel_feed import get_state_diesel_benchmark
+        states = [("OR", "Oregon"), ("CA", "California"), ("WA", "Washington"), ("TX", "Texas"), ("FL", "Florida"), ("WY", "Wyoming"), ("IL", "Illinois")]
+        lines = ["[СЕРТИФИЦИРОВАННЫЕ ДАННЫЕ AAA ПО СОЛЯРКЕ (ДИЗЕЛЬ, НЕ БЕНЗИН!)]:"]
+        for code, name in states:
+            b = get_state_diesel_benchmark(code)
+            if b:
+                lines.append(f"• {name} ({code}): средняя розничная ${b['diesel']:.2f}/gal (коридор: ${b['range_low']:.2f}–${b['range_high']:.2f})")
+        lines.append("[ДИСПЕТЧЕРСКИЕ ПРАВИЛА И ОРИЕНТИРЫ ПО РЕГИОНАМ]:")
+        lines.append("- Вест Коаст (West Coast): В Калифорнии ($8.40) самый высокий налог и дизель в стране. Заправляться нужно ДО въезда в CA — на юге Орегона (Медфорд, Кламат-Фолс: средняя $6.74, по картам RTS/Mudflap $5.10–$5.35) или в Неваде. В самой Калифорнии брать только аварийный минимум.")
+        lines.append("- Орегон: нет налога на галлон на колонке (поэтому цена на колонке кажется ниже), но действует весовой налог Weight-Mile Tax, который компания платит в конце квартала.")
+        lines.append("- КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО называть цены на бензин $3.xx вместо реального коммерческого дизеля $5.xx-$8.xx!")
+        return "\n".join(lines)
+    except Exception:
+        return ""
+
+def is_conversational_fuel_query(text: str) -> bool:
+    """
+    Identifies high-level conversational or regional questions about diesel/fuel
+    that should be answered by Gemini dispatcher with full chat memory and AAA grounding,
+    rather than hijacked by a 3-truckstop geocoding template.
+    """
+    if not text:
+        return False
+    t = text.lower()
+    broad_indicators = [
+        "вест коаст", "west coast", "ист коаст", "east coast", "мидвест", "midwest",
+        "по штатам", "по коридору", "вдоль трассы", "в калифорнии или", "в орегоне или",
+        "вообще", "посоветуй", "что думаешь", "почему", "стоит ли", "где выгоднее",
+        "где дешевле солярка", "где сейчас дешевый дизель", "где лучше заправиться",
+        "налог", "ifta", "вес-майл", "дорогой", "дешевый", "а почему", "а где"
+    ]
+    if any(b in t for b in broad_indicators):
+        return True
+    if "?" in text and any(w in t for w in ["почему", "где", "как", "откуда", "зачем", "а что", "какой"]):
+        has_specific_pin = bool(re.search(r'\b(exit\s*\d+|экзит\s*\d+|loves|pilot|flying j|ta|petro|заправка в [а-яa-z]+)\b', t))
+        if not has_specific_pin:
+            return True
+    return False
 
 def ask_gemini(user_message, chat_id=None):
     profile_context = ""
@@ -228,12 +342,13 @@ def ask_gemini(user_message, chat_id=None):
         except Exception as e:
             print(f"[WARN] Failed to get profile context: {e}")
 
-    system_instruction_text = f"{SYSTEM_PROMPT}\n\n{profile_context}".strip()
+    fuel_summary = get_live_fuel_market_summary()
+    system_instruction_text = f"{SYSTEM_PROMPT}\n\n{profile_context}\n\n{fuel_summary}".strip()
     
+    # Load persistent multi-turn conversation history
+    history = load_chat_history(chat_id, limit=8) if chat_id else []
     contents = []
-    history = CHAT_MEMORY.get(chat_id, [])
-    # Build conversation turns from history
-    for turn in history[-8:]:
+    for turn in history:
         contents.append({
             "role": turn["role"],
             "parts": [{"text": turn["text"]}]
@@ -260,12 +375,13 @@ def ask_gemini(user_message, chat_id=None):
     if not sanitized_contents:
         sanitized_contents = [{"role": "user", "parts": [{"text": user_message}]}]
 
-    # Use Dynamic Model Router with 429 Circuit Breaker & Failover
+    # Use Dynamic Model Router with 429 Circuit Breaker & Failover, passing full sanitized_contents
     try:
         raw_text, model_used = query_model_with_failover(
             user_message, 
             system_prompt=system_instruction_text, 
-            context_type="general"
+            context_type="general",
+            contents=sanitized_contents
         )
         if raw_text:
             try:
@@ -421,58 +537,71 @@ def process_message(msg):
                     print(f"[WARN] DB update failed: {ex}")
                 return
 
-    # Start command
-    if text.startswith("/start"):
+    # Start command & Main Menu
+    if text.startswith("/start") or text.strip() in ["⬅️ В главное меню", "главное меню", "меню"]:
         set_driver_session(chat_id, state="idle")
         welcome_text = (
             "🚛 <b>Диспетчер на связи.</b>\n"
-            "Прикрываю автовозников на дороге 24/7 по любым вопросам: споры с брокерами, простой, срыв, солярка, свесы, ремонт.\n\n"
-            "• ⛽ <code>/fuel</code> — Поиск дешевого дизеля по геолокации или городу\n"
-            "• 🔧 <code>/repair</code> — Выездные мастера (Cash/Zelle, без репортов в DOT)\n"
-            "• 🔍 <code>/broker MC#</code> — Экспресс-проверка брокера и бонда $75,000\n"
-            "• ⚖️ <code>/claim</code> — Готовые претензии на Детеншен ($75/ч) и TONU ($250)\n"
-            "• 📏 <code>/overhang [Штат]</code> — Допустимые свесы и высоты\n"
-            "• 👤 <code>/profile</code> — Сменить сетап (Стингер / Виджик)\n\n"
-            "<i>Или просто пиши любой вопрос в чат — отвечу сразу.</i>"
+            "Прикрываю автовозников на дороге 24/7 по любым вопросам: анализ маршрута, расход солярки, ремонт автовозов и клиентских авто, споры с брокерами, свесы и весовые.\n\n"
+            "• 🛣️ <code>/route</code> — Анализ маршрута: километраж, солярка, скидки по картам, IFTA и весы\n"
+            "• 🔧 <code>/repair</code> — Мастер рядом: ремонт автовоза (гидравлика/сварка) и скрытый ремонт авто клиента (PDR/царапины)\n"
+            "• 🏢 <code>/broker MC#</code> — Проверка брокера, бонда $75,000, дней оплаты и факторинга\n"
+            "• ⚖️ <code>/overhang [Штат]</code> — Допустимые свесы по FAST Act (4ft/6ft), высота 13'6\"/14'0\" и весы POE\n"
+            "• 📋 <code>/claim</code> — Претензии в 1 клик: Детеншен ($75/ч), TONU ($250), In-Op ($150)\n"
+            "• 👤 <code>/profile</code> — Сетап (Стингер/Виджик) и топливная карта (Mudflap, RTS, TCS)\n\n"
+            "<i>Используй кнопки внизу или просто пиши любой вопрос или гео-точку 📍 в чат — отвечу сразу.</i>"
         )
-        send_telegram_message(chat_id, welcome_text, reply_to_message_id=msg_id)
+        send_telegram_message(chat_id, welcome_text, reply_to_message_id=msg_id, reply_markup=MAIN_KEYBOARD)
         return
 
     # Help command
-    if text.startswith("/help") or text.strip().lower() in ["помощь", "меню", "команды"]:
+    if text.startswith("/help") or text.strip().lower() in ["помощь", "команды"]:
         help_text = (
             "🆘 <b>ДИСПЕТЧЕРСКАЯ ПОМОЩЬ И КОМАНДЫ БОТА:</b>\n\n"
-            "• ⛽ <code>/fuel</code> — Поиск дешевого дизеля и трак-стопов по GPS\n"
-            "• 🔧 <code>/repair</code> — Выездные мастера и сварка автовозов (кэш/без репортов)\n"
-            "• 🔍 <code>/broker MC#</code> — Проверка брокера, бонда $75,000 и срока оплаты\n"
-            "• ⚖️ <code>/claim</code> — Официальные претензии на Детеншен ($75/ч) и TONU ($250)\n"
-            "• 📏 <code>/overhang [Штат]</code> — Допустимые свесы, высота и веса\n"
-            "• 👤 <code>/profile</code> — Твой сохраненный профиль и оборудование\n"
-            "• 🚛 <code>/start</code> — Главное приветствие\n\n"
-            "💬 <b>Или просто пиши любой вопрос в чат:</b>\n"
-            "<i>'Сколько взять за неходовую Теслу?', 'Какая солярка дешевле в Вайоминге?', 'Коп выписал тикет за свес в Пенсильвании — что делать?'</i> — Совет ответит сразу!"
+            "• 🛣️ <code>/route</code> — Анализ маршрута: километраж, солярка, скидка по карте, IFTA и весы\n"
+            "• 🔧 <code>/repair</code> — Выездные мастера для трака (Cash/без DOT) и скрытый ремонт авто клиента (PDR/царапины)\n"
+            "• 🏢 <code>/broker MC#</code> — Проверка брокера, бонда $75,000 и срока оплаты\n"
+            "• ⚖️ <code>/overhang [Штат]</code> — Свесы FAST Act, высоты мостов и активные весовые станции\n"
+            "• 📋 <code>/claim</code> — Претензии: Детеншен ($75/ч), TONU ($250), неходовые авто ($150)\n"
+            "• 👤 <code>/profile</code> — Твой сетап и топливная карта со скидкой\n"
+            "• 🚛 <code>/start</code> — Главное меню\n\n"
+            "💬 <b>Или просто пиши любой вопрос или скинь гео-точку 📍 в чат:</b>\n"
+            "<i>'Посчитай маршрут из Сиэтла в ЛА', 'Поцарапали дверь на клиентской Тесле в Далласе', 'Брокер TQL не платит детеншен'</i> — помогу сразу!"
         )
-        send_telegram_message(chat_id, help_text, reply_to_message_id=msg_id)
+        send_telegram_message(chat_id, help_text, reply_to_message_id=msg_id, reply_markup=MAIN_KEYBOARD)
         return
 
-    # Repair & Confidential Mechanics Directory
+    # Repair & Mechanic Service (Rig breakdown vs Stealth client cargo damage)
     is_repair_inquiry = (
         text.startswith("/repair") or
         text.strip().lower() in ["ремонт", "механик", "мастер", "починить", "сломался", "мастер рядом", "🔧 мастер рядом"] or
         any(k in text.lower() for k in [
             "лопнул шланг", "течет гидравлика", "вытек цилиндр", "нужен механик",
             "нужен ремонт", "сломалась рампа", "нужен сварщик", "найти мастера",
-            "сварка алюминия", "пневмоподушка", "force regen", "дерейт"
+            "сварка алюминия", "пневмоподушка", "force regen", "дерейт",
+            "поцарапали", "вмятина", "бордюрка", "клиентское авто", "починить авто клиента"
         ])
     )
     if is_repair_inquiry:
         parts = text.split(maxsplit=1)
-        q = parts[1] if (len(parts) > 1 and text.startswith("/repair")) else text
-        lat = location.get("latitude") if location else None
-        lon = location.get("longitude") if location else None
-        loc_desc = loc_str_quick or (f"{lat:.2f}, {lon:.2f}" if lat else None)
-        repair_card = handle_repair_inquiry(text=q, lat=lat, lon=lon, location_str=loc_desc)
-        send_telegram_message(chat_id, repair_card, reply_to_message_id=msg_id)
+        q = parts[1] if (len(parts) > 1 and text.startswith("/repair")) else ("" if text.strip().lower() in ["ремонт", "механик", "мастер", "починить", "сломался", "мастер рядом", "🔧 мастер рядом", "/repair"] else text)
+        if q and len(q) > 6 and not any(q.strip().lower() == w for w in ["мастер рядом", "ремонт", "механик"]):
+            send_chat_action(chat_id, "find_location")
+            repair_card = handle_repair_inquiry(text=q)
+            send_telegram_message(chat_id, repair_card, reply_to_message_id=msg_id, reply_markup=MAIN_KEYBOARD)
+            record_chat_turn(chat_id, "model", repair_card)
+            return
+
+        set_driver_session(chat_id, state="awaiting_repair_inquiry")
+        prompt_text = (
+            "🔧 <b>Поиск мастера рядом:</b>\n\n"
+            "📍 Нажми <b>«📍 Отправить мою гео-точку»</b> внизу, либо напиши, где находишься и что случилось\n"
+            "(например: <code>1033 Green Acres Rd, Eugene OR, лопнул шланг подъема рампы</code> или <code>вмятина на двери клиентского авто в Далласе</code>):\n\n"
+            "• <i>Помощь с автовозом:</i> гидравлика, выездной пресс шлангов, сварка рампы, регенерация (Cash/Zelle без отметок в DOT)\n"
+            "• <i>Помощь с клиентским авто:</i> беспокрасочный PDR, локальная полировка сколов/царапин, восстановление дисков от бордюрки (без внесения в Carfax)"
+        )
+        send_telegram_message(chat_id, prompt_text, reply_to_message_id=msg_id, reply_markup=REPAIR_KEYBOARD)
+        record_chat_turn(chat_id, "model", prompt_text)
         return
 
     # Profile command
@@ -483,159 +612,258 @@ def process_message(msg):
 
     # Claim & Legal Generator
     if text.startswith("/claim") or text.startswith("/detention") or text.startswith("/tonu") or text.strip() in ["📋 Шаблоны клеймов", "шаблоны клеймов", "клеймы"]:
-        if text.strip() in ["📋 Шаблоны клеймов", "шаблоны клеймов", "клеймы", "/claim"]:
-            claims_menu = (
-                "📋 <b>Официальные претензии брокерам (1-tap копирование):</b>\n\n"
-                "• <code>/detention</code> — Простой ($75/час после 2 часов бесплатного ожидания)\n"
-                "• <code>/tonu</code> — Срыв погрузки TONU ($150–$250 компенсация)\n"
-                "• <code>/inop</code> — Доплата за погрузку неходового авто ($150)\n\n"
-                "<i>Нажми на нужную команду для получения готового текста сообщения брокеру.</i>"
-            )
-            send_telegram_message(chat_id, claims_menu, reply_to_message_id=msg_id)
-            return
-        claim_card = handle_claim_command(text)
-        send_telegram_message(chat_id, claim_card, reply_to_message_id=msg_id)
+        claim_card, claim_markup = handle_claim_command(text)
+        send_telegram_message(chat_id, claim_card, reply_to_message_id=msg_id, reply_markup=claim_markup or MAIN_KEYBOARD)
+        record_chat_turn(chat_id, "model", claim_card)
         return
 
-    # Overhang & Limits Advisor
-    if text.startswith("/overhang") or text.lower().startswith("свес") or "свесы" in text.lower():
-        parts = text.split()
-        st = parts[1] if len(parts) > 1 else None
-        if not st:
-            st_match = re.search(r'\b(PA|FL|TX|CA|GA|OH|IN|NY|NC|SC|IL)\b', text, re.IGNORECASE)
-            if st_match:
-                st = st_match.group(1)
-        overhang_card = get_overhang_guide(st)
-        send_telegram_message(chat_id, overhang_card, reply_to_message_id=msg_id)
+    # Overhang & Limits Advisor (Dynamic FAST Act & Weigh Stations)
+    if text.startswith("/overhang") or text.lower().startswith("свес") or "свесы" in text.lower() or text.strip() in ["⚖️ Свесы и весы (FAST Act)", "свесы и весы"]:
+        parts = text.split(maxsplit=1)
+        st_query = parts[1] if (len(parts) > 1 and text.startswith("/overhang")) else ("" if text.strip() in ["⚖️ Свесы и весы (FAST Act)", "свесы и весы", "/overhang"] else text)
+        if st_query and len(st_query) >= 2 and st_query.strip().lower() not in ["свесы и весы (fast act)", "свесы и весы", "свесы"]:
+            send_chat_action(chat_id, "typing")
+            overhang_card = get_overhang_guide(text=st_query)
+            send_telegram_message(chat_id, overhang_card, reply_to_message_id=msg_id, reply_markup=MAIN_KEYBOARD)
+            record_chat_turn(chat_id, "model", overhang_card)
+            return
+
+        set_driver_session(chat_id, state="awaiting_overhang_location")
+        prompt_text = (
+            "⚖️ <b>Свесы и весы (FAST Act 23 CFR § 658.13):</b>\n\n"
+            "📍 Нажми <b>«📍 Проверить свесы по моей гео-точке»</b> внизу, чтобы автоматически определить штат и весы POE по твоему местоположению,\n"
+            "либо напиши штат или город (например: <code>Орегон</code>, <code>PA</code>, <code>Eugene OR</code> или <code>Dallas TX</code>):"
+        )
+        send_telegram_message(chat_id, prompt_text, reply_to_message_id=msg_id, reply_markup=OVERHANG_KEYBOARD)
+        record_chat_turn(chat_id, "model", prompt_text)
         return
 
     # Broker & MC Verification
     if text.startswith("/broker") or text.lower().startswith("проверь брокера") or text.lower().startswith("проверка брокера") or text.strip() == "🏢 Проверить брокера":
         parts = text.split(maxsplit=1)
-        query = parts[1] if len(parts) > 1 else ""
-        if not query:
+        query = parts[1] if (len(parts) > 1 and text.startswith("/broker")) else ""
+        if not query and not text.strip().startswith("/broker") and text.strip() != "🏢 Проверить брокера":
             m = re.search(r'(?:проверь|проверка)\s+брокера\s*(.*)', text, re.IGNORECASE)
             if m:
                 query = m.group(1).strip()
         if not query:
+            set_driver_session(chat_id, state="awaiting_broker_query")
             prompt_text = (
                 "🏢 <b>Проверка брокера и MC:</b>\n\n"
-                "Напиши номер MC (например: <code>MC 1045231</code>) или название компании (например: <code>TQL</code>) — "
+                "Напиши номер MC (например: <code>MC 1045231</code>), название компании (например: <code>TQL</code>) "
+                "или скопируй шапку из Rate Confirmation —\n"
                 "проверю статус бонда BMC-84 ($75k), дни оплаты (DTP), одобрение факторингом и риски дабл-брокеринга."
             )
-            send_telegram_message(chat_id, prompt_text, reply_to_message_id=msg_id)
+            send_telegram_message(chat_id, prompt_text, reply_to_message_id=msg_id, reply_markup=MAIN_KEYBOARD)
             return
         send_chat_action(chat_id, "typing")
         broker_card = verify_broker(query)
-        send_telegram_message(chat_id, broker_card, reply_to_message_id=msg_id)
+        send_telegram_message(chat_id, broker_card, reply_to_message_id=msg_id, reply_markup=MAIN_KEYBOARD)
+        record_chat_turn(chat_id, "model", broker_card)
         return
 
-    # Explicit /fuel command
-    if text.startswith("/fuel"):
+    # Route & Fuel Strategic Analysis command
+    is_route_command = (
+        text.startswith("/route") or
+        text.startswith("/fuel") or
+        text.strip().lower() in ["🛣️ анализ маршрута и топлива", "анализ маршрута и топлива", "анализ маршрута", "маршрут"]
+    )
+    if is_route_command:
         parts = text.split(maxsplit=1)
-        query_loc = parts[1] if len(parts) > 1 else ""
+        query_route = parts[1] if (len(parts) > 1 and (text.startswith("/route") or text.startswith("/fuel"))) else ""
         known_truck = profile.get("truck_type") if profile.get("truck_type") != "Неизвестно" else "Стингер 9-кар (Class 8)"
-        if query_loc:
-            ack_text = f"⏳ <b>Секунду!</b> Пробиваю заправки и цены на дизель для {query_loc}... Это может занять около минуты."
-            ack_msg = send_telegram_message(chat_id, ack_text, reply_to_message_id=msg_id)
-            ack_msg_id = ack_msg.get("result", {}).get("message_id") if ack_msg else None
+        fuel_card = profile.get("fuel_card", "Mudflap")
+        fuel_discount = float(profile.get("fuel_discount", 0.45))
+        cargo_type = profile.get("typical_cargo", "Груженый")
 
+        if query_route:
             send_chat_action(chat_id, "typing")
-            fuel_answer = generate_fuel_recommendations(query_loc, driver_setup=known_truck, cargo="Груженый")
-            record_chat_turn(chat_id, "model", fuel_answer)
-            if ack_msg_id:
-                res = edit_telegram_message(chat_id, ack_msg_id, fuel_answer)
-                if not res or not res.get("ok"):
-                    send_telegram_message(chat_id, fuel_answer, reply_to_message_id=msg_id)
-            else:
-                send_telegram_message(chat_id, fuel_answer, reply_to_message_id=msg_id)
+            route_answer = analyze_car_hauler_route(
+                route_text=query_route,
+                driver_setup=known_truck,
+                fuel_card=fuel_card,
+                fuel_discount=fuel_discount,
+                cargo=cargo_type
+            )
+            record_chat_turn(chat_id, "model", route_answer)
+            send_telegram_message(chat_id, route_answer, reply_to_message_id=msg_id, reply_markup=MAIN_KEYBOARD)
             return
 
-        set_driver_session(chat_id, state="awaiting_fuel_details")
-        prompt_msg = get_fuel_request_prompt()
-        send_telegram_message(chat_id, prompt_msg, reply_to_message_id=msg_id)
+        set_driver_session(chat_id, state="awaiting_route_details")
+        disc_text = f"-${fuel_discount:.2f}/gal" if fuel_discount > 0 else "0¢"
+        prompt_msg = (
+            f"🛣️ <b>Анализ маршрута и топлива:</b> <b>{known_truck}</b>\n"
+            f"💳 Топливная программа: <b>{fuel_card}</b> ({disc_text})\n\n"
+            f"📍 Нажми <b>«📍 Отправить мою гео-точку»</b> внизу, чтобы автоматически взять текущую локацию за старт,\n"
+            f"либо напиши маршрут сообщением (например: <code>1033 Green Acres Rd, Eugene OR в Dallas TX</code> или <code>Копарт Атланта ➔ Майами</code>):"
+        )
+        send_telegram_message(chat_id, prompt_msg, reply_to_message_id=msg_id, reply_markup=ROUTE_KEYBOARD)
         record_chat_turn(chat_id, "model", prompt_msg)
         return
 
-    # Fuel Intelligence Flow
+    # Route & Repair Location Handling Flow
     session = get_driver_session(chat_id)
     session_state = session.get("state")
     known_truck = profile.get("truck_type") if profile.get("truck_type") != "Неизвестно" else "Стингер 9-кар (Class 8)"
+    fuel_card = profile.get("fuel_card", "Mudflap")
+    fuel_discount = float(profile.get("fuel_discount", 0.45))
+    cargo_type = profile.get("typical_cargo", "Груженый")
 
-    # A. Did driver send location pin OR are they in awaiting_fuel_details state?
-    if location or session_state == "awaiting_fuel_details":
-        # Check if user is objecting, conversing or clarifying instead of sending location
-        is_conversational = any(w in text.lower() for w in [
-            "ты же", "знаешь", "в профиле", "с чего", "почему", "откуда", "небраск",
-            "зачем", "отмена", "стоп", "хватит", "нет", "не надо", "какой", "что ты"
-        ])
-        if not location and is_conversational:
-            set_driver_session(chat_id, state="idle")
-            # Falls through to general dispatcher ask_gemini with full multi-turn CHAT_MEMORY
-        else:
-            lat = location.get("latitude") if location else None
-            lon = location.get("longitude") if location else None
-            loc_str = loc_str_quick or session.get("last_query") or text
-            if location and not loc_str_quick and lat and lon:
-                loc_str = reverse_geocode(lat, lon)
+    # A. Did driver send location pin?
+    if location:
+        lat = location.get("latitude")
+        lon = location.get("longitude")
+        try:
+            from route_advisor import reverse_geocode_osm
+            loc_info = reverse_geocode_osm(lat, lon)
+        except Exception:
+            loc_info = {"display": f"{lat:.4f}, {lon:.4f}", "lat": lat, "lon": lon, "state": "US"}
+        loc_str = loc_info.get("display")
 
-            setup, cargo = extract_setup_and_cargo(text)
-            driver_setup = setup or session.get("driver_setup") or known_truck
-            cargo_type = cargo or session.get("cargo_type") or (profile.get("typical_cargo") if profile.get("typical_cargo") != "Не указан" else None) or "Груженый"
-
-            ack_text = f"⏳ <b>Принял точку!</b> Сканирую трассу и проверяю актуальные цены на солярку для твоего сетапа ({driver_setup})... Это может занять около минуты."
-            ack_msg = send_telegram_message(chat_id, ack_text, reply_to_message_id=msg_id)
-            ack_msg_id = ack_msg.get("result", {}).get("message_id") if ack_msg else None
-
-            send_chat_action(chat_id, "find_location")
-            fuel_answer = generate_fuel_recommendations(loc_str, driver_setup=driver_setup, cargo=cargo_type, lat=lat, lon=lon)
-            set_driver_session(chat_id, state="idle", driver_setup=driver_setup, cargo_type=cargo_type)
-            record_chat_turn(chat_id, "model", fuel_answer)
-
-            if ack_msg_id:
-                res = edit_telegram_message(chat_id, ack_msg_id, fuel_answer)
-                if not res or not res.get("ok"):
-                    send_telegram_message(chat_id, fuel_answer, reply_to_message_id=msg_id)
+        # 1. Route to repair if driver requested mechanic
+        if session_state in ["awaiting_repair_inquiry", "awaiting_repair_location"]:
+            last_q = session.get("last_query") or ""
+            if last_q and len(last_q) > 6 and last_q.lower() not in ["ремонт", "механик", "мастер"]:
+                set_driver_session(chat_id, state="idle")
+                send_chat_action(chat_id, "find_location")
+                repair_card = handle_repair_inquiry(text=last_q, lat=lat, lon=lon, location_str=loc_str)
+                send_telegram_message(chat_id, repair_card, reply_to_message_id=msg_id, reply_markup=MAIN_KEYBOARD)
+                record_chat_turn(chat_id, "model", repair_card)
+                return
             else:
-                send_telegram_message(chat_id, fuel_answer, reply_to_message_id=msg_id)
+                set_driver_session(chat_id, state="awaiting_repair_problem", last_query=json.dumps(loc_info))
+                loc_msg = (
+                    f"📍 <b>Локация принята:</b> <b>{loc_str}</b>\n\n"
+                    f"🛠️ <b>Какая помощь требуется? Напиши проблему:</b>\n"
+                    f"• <b>Для твоего автовоза</b> (лопнул гидрошланг, вытек цилиндр, треснула рампа, сварка алюминия, DPF регенерация, воздух/тормоза)?\n"
+                    f"• <b>Или повреждение клиентского авто</b> (вмятина, царапина, бордюрка на диске, скол — нужно сделать скрытно до сдачи на ярде)?"
+                )
+                send_telegram_message(chat_id, loc_msg, reply_to_message_id=msg_id, reply_markup=MAIN_KEYBOARD)
+                record_chat_turn(chat_id, "model", loc_msg)
+                return
+
+        # 2. Overhang check by location pin
+        if session_state == "awaiting_overhang_location":
+            set_driver_session(chat_id, state="idle")
+            send_chat_action(chat_id, "typing")
+            overhang_card = get_overhang_guide(lat=lat, lon=lon)
+            send_telegram_message(chat_id, overhang_card, reply_to_message_id=msg_id, reply_markup=MAIN_KEYBOARD)
+            record_chat_turn(chat_id, "model", overhang_card)
             return
 
-    # B. Did driver ask about fuel / diesel / gas station?
-    if is_fuel_inquiry(text):
-        setup, cargo = extract_setup_and_cargo(text)
-        driver_setup = setup or session.get("driver_setup") or known_truck
-        cargo_type = cargo or session.get("cargo_type") or "Груженый"
+        # 3. Default Location pin sets origin for route planning
+        set_driver_session(chat_id, state="awaiting_route_destination", last_query=json.dumps(loc_info))
+        loc_msg = (
+            f"📍 <b>Точка старта принята:</b> <b>{loc_str}</b>\n"
+            f"🚛 Сетап: <b>{known_truck}</b> | 💳 Карта: <b>{fuel_card}</b>\n\n"
+            f"🏁 <b>Куда едем?</b> Напиши пункт назначения:\n"
+            f"(город, точный адрес разгрузки или аукцион Copart / Manheim)"
+        )
+        send_telegram_message(chat_id, loc_msg, reply_to_message_id=msg_id, reply_markup=MAIN_KEYBOARD)
+        record_chat_turn(chat_id, "model", loc_msg)
+        return
 
-        # Check if query contains any location string (city, state, highway, exit, etc.)
-        loc_candidate = re.sub(
-            r'(?i)\b(топливо|солярка|солярку|дизель|заправка|заправки|заправиться|где|почем|цена|тракстоп|трак-стоп|fuel|diesel|gas|station|stop)\b',
-            '',
-            text
-        ).strip()
+    # B. Was driver in awaiting session state?
+    if session_state in [
+        "awaiting_route_details", "awaiting_route_destination", "awaiting_fuel_details",
+        "awaiting_repair_inquiry", "awaiting_repair_location", "awaiting_repair_problem",
+        "awaiting_overhang_location", "awaiting_broker_query"
+    ]:
+        is_conversational = any(w in text.lower() for w in [
+            "ты же", "знаешь", "в профиле", "с чего", "почему", "откуда",
+            "зачем", "отмена", "стоп", "хватит", "нет", "не надо", "какой", "что ты", "главное меню", "меню"
+        ])
+        if is_conversational or text.strip() in ["⬅️ В главное меню", "Отмена"]:
+            set_driver_session(chat_id, state="idle")
+            if text.strip() in ["⬅️ В главное меню", "Отмена"]:
+                send_telegram_message(chat_id, "Главное меню:", reply_to_message_id=msg_id, reply_markup=MAIN_KEYBOARD)
+                return
+            # Falls through to general dispatcher
+        else:
+            # 1. Repair problem follow-up
+            if session_state == "awaiting_repair_problem":
+                loc_info = {}
+                try:
+                    loc_info = json.loads(session.get("last_query") or "{}")
+                except Exception:
+                    loc_info = {}
+                set_driver_session(chat_id, state="idle")
+                send_chat_action(chat_id, "find_location")
+                repair_card = handle_repair_inquiry(
+                    text=text,
+                    lat=loc_info.get("lat"),
+                    lon=loc_info.get("lon"),
+                    location_str=loc_info.get("display")
+                )
+                record_chat_turn(chat_id, "model", repair_card)
+                send_telegram_message(chat_id, repair_card, reply_to_message_id=msg_id, reply_markup=MAIN_KEYBOARD)
+                return
 
-        if len(loc_candidate) >= 3:
-            ack_text = f"⏳ <b>Секунду!</b> Пробиваю заправки и цены на дизель для {driver_setup} в районе <i>{loc_candidate}</i>... Это может занять около минуты."
-            ack_msg = send_telegram_message(chat_id, ack_text, reply_to_message_id=msg_id)
-            ack_msg_id = ack_msg.get("result", {}).get("message_id") if ack_msg else None
+            # 2. Repair text inquiry with location in text
+            if session_state in ["awaiting_repair_inquiry", "awaiting_repair_location"]:
+                set_driver_session(chat_id, state="idle")
+                send_chat_action(chat_id, "find_location")
+                repair_card = handle_repair_inquiry(text=text)
+                record_chat_turn(chat_id, "model", repair_card)
+                send_telegram_message(chat_id, repair_card, reply_to_message_id=msg_id, reply_markup=MAIN_KEYBOARD)
+                return
+
+            # 3. Overhang location follow-up
+            if session_state == "awaiting_overhang_location":
+                set_driver_session(chat_id, state="idle")
+                send_chat_action(chat_id, "typing")
+                overhang_card = get_overhang_guide(text=text)
+                record_chat_turn(chat_id, "model", overhang_card)
+                send_telegram_message(chat_id, overhang_card, reply_to_message_id=msg_id, reply_markup=MAIN_KEYBOARD)
+                return
+
+            # 4. Broker query follow-up
+            if session_state == "awaiting_broker_query":
+                set_driver_session(chat_id, state="idle")
+                send_chat_action(chat_id, "typing")
+                broker_card = verify_broker(text)
+                record_chat_turn(chat_id, "model", broker_card)
+                send_telegram_message(chat_id, broker_card, reply_to_message_id=msg_id, reply_markup=MAIN_KEYBOARD)
+                return
+
+            # 5. Route Destination follow-up
+            set_driver_session(chat_id, state="idle")
+            origin_geo = None
+            if session_state == "awaiting_route_destination":
+                try:
+                    origin_geo = json.loads(session.get("last_query") or "{}")
+                except Exception:
+                    origin_geo = None
 
             send_chat_action(chat_id, "typing")
-            fuel_answer = generate_fuel_recommendations(loc_candidate, driver_setup=driver_setup, cargo=cargo_type)
-            set_driver_session(chat_id, state="idle", driver_setup=driver_setup, cargo_type=cargo_type)
-            record_chat_turn(chat_id, "model", fuel_answer)
-
-            if ack_msg_id:
-                res = edit_telegram_message(chat_id, ack_msg_id, fuel_answer)
-                if not res or not res.get("ok"):
-                    send_telegram_message(chat_id, fuel_answer, reply_to_message_id=msg_id)
-            else:
-                send_telegram_message(chat_id, fuel_answer, reply_to_message_id=msg_id)
+            route_answer = analyze_car_hauler_route(
+                route_text=text,
+                origin_geo=origin_geo,
+                driver_setup=known_truck,
+                fuel_card=fuel_card,
+                fuel_discount=fuel_discount,
+                cargo=cargo_type
+            )
+            record_chat_turn(chat_id, "model", route_answer)
+            send_telegram_message(chat_id, route_answer, reply_to_message_id=msg_id, reply_markup=MAIN_KEYBOARD)
             return
 
-        # If purely "топливо" without any location: ask concisely in 1-2 lines
-        set_driver_session(chat_id, state="awaiting_fuel_details", driver_setup=driver_setup, cargo_type=cargo_type, last_query=text)
-        prompt_msg = get_fuel_request_prompt()
-        send_telegram_message(chat_id, prompt_msg, reply_to_message_id=msg_id)
-        record_chat_turn(chat_id, "model", prompt_msg)
+    # C. Route or Fuel inquiry in free-form text
+    has_route_pattern = (
+        bool(re.search(r'(?i)\b([а-яa-z0-9\s,\.\-]{3,}\s*(?:-|–|—|->|до|в|to)\s*[а-яa-z0-9\s,\.\-]{3,})\b', text)) and
+        any(k in text.lower() for k in ["маршрут", "расход", "солярк", "дизел", "миль", "доехать", "route", "fuel", "miles", "копарт", "copart", "manheim", "манхейм", "аукцион", "-", "to", "до"])
+    )
+    if has_route_pattern and not is_conversational_fuel_query(text):
+        send_chat_action(chat_id, "typing")
+        route_answer = analyze_car_hauler_route(
+            route_text=text,
+            driver_setup=known_truck,
+            fuel_card=fuel_card,
+            fuel_discount=fuel_discount,
+            cargo=cargo_type
+        )
+        record_chat_turn(chat_id, "model", route_answer)
+        send_telegram_message(chat_id, route_answer, reply_to_message_id=msg_id, reply_markup=MAIN_KEYBOARD)
         return
 
     # Indicate typing to user
@@ -708,6 +936,14 @@ def process_callback_query(cb):
 
     thread_id = msg.get("message_thread_id")
 
+    # Claim interactive templates
+    if data.startswith("claim_"):
+        claim_type = data.replace("claim_", "")
+        answer_callback_query(cb_id, text="Шаблон сформирован")
+        claim_card, _ = handle_claim_command(claim_type)
+        send_telegram_message(chat_id, claim_card, reply_markup=MAIN_KEYBOARD)
+        return
+
     # Profile Interactive Callbacks
     if data.startswith("setrig_"):
         rig_choice = data.replace("setrig_", "")
@@ -715,6 +951,16 @@ def process_callback_query(cb):
         prof = set_manual_rig(from_id, rig_choice)
         rig_title = prof.get("truck_type")
         answer_callback_query(cb_id, text=f"Сетап обновлен: {rig_title}")
+        new_text, new_markup = format_user_profile_card(from_id)
+        edit_telegram_message(chat_id, msg_id, new_text, reply_markup=new_markup)
+        return
+
+    if data.startswith("setcard_"):
+        card_choice = data.replace("setcard_", "")
+        from_id = from_user.get("id") or chat_id
+        prof = set_manual_fuel_card(from_id, card_choice)
+        card_title = prof.get("fuel_card")
+        answer_callback_query(cb_id, text=f"Топливная карта: {card_title}")
         new_text, new_markup = format_user_profile_card(from_id)
         edit_telegram_message(chat_id, msg_id, new_text, reply_markup=new_markup)
         return
@@ -853,14 +1099,14 @@ def setup_telegram_commands():
     if not API_URL:
         return
     commands = [
-        {"command": "fuel", "description": "⛽ Дешевый дизель по геолокации"},
-        {"command": "repair", "description": "🔧 Свой ремонт и выездные мастера (Cash)"},
-        {"command": "broker", "description": "🔍 Проверка брокера по MC (бонд $75k)"},
-        {"command": "claim", "description": "⚖️ Претензия: Детеншен ($75/ч) / TONU"},
-        {"command": "overhang", "description": "📏 Свесы, габариты и правила по штатам"},
-        {"command": "profile", "description": "👤 Мой профиль (трак, статус, коридор)"},
+        {"command": "route", "description": "🛣️ Анализ маршрута и солярки"},
+        {"command": "repair", "description": "🔧 Мастер рядом (трак или авто клиента)"},
+        {"command": "broker", "description": "🏢 Проверка брокера по MC ($75k бонд)"},
+        {"command": "overhang", "description": "⚖️ Свесы и весы (FAST Act)"},
+        {"command": "claim", "description": "📋 Претензии: Детеншен, TONU, In-Op"},
+        {"command": "profile", "description": "👤 Мой сетап и топливная карта"},
         {"command": "start", "description": "🚛 Главное меню диспетчера"},
-        {"command": "help", "description": "🆘 Помощь и дежурный диспетчер"}
+        {"command": "help", "description": "🆘 Помощь дежурного диспетчера"}
     ]
     url = f"{API_URL}/setMyCommands"
     try:
@@ -885,6 +1131,7 @@ def run_bot():
     except Exception as me:
         print(f"[WARN] Failed to start Prometheus metrics server: {me}")
     setup_telegram_commands()
+    init_chat_history_db()
     init_fuel_session_db()
     try:
         try:

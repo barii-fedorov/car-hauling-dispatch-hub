@@ -23,9 +23,11 @@ except ImportError:
 HERE_API_KEY = os.environ.get("HERE_API_KEY", "l1FEin56p0iO3pf_smaXSnAMFN2I8PtsK8h63zPfQcU")
 HERE_FUEL_ENDPOINT = "https://fuel.hereapi.com/v3/stations"
 
-# Hardcoded Safe Stop Limits
-HERE_MONTHLY_LIMIT = 245000  # 245,000 of 250,000 (5,000 transaction safety buffer)
-HERE_DAILY_LIMIT = 8500      # Soft daily safety pacing
+# Hardcoded Safe Stop Limits & Cost Budget
+HERE_COST_PER_REQ_EUR = 0.00466
+HERE_BUDGET_EUR = 10.00
+HERE_MONTHLY_LIMIT = 2000    # Hard stop at 2,000 calls = €9.32 max (strictly under €10 budget)
+HERE_DAILY_LIMIT = 70        # Soft daily safety pacing (~66-70 calls/day)
 
 PG_HOST = os.environ.get("POSTGRES_HOST", "postgres")
 PG_PORT = int(os.environ.get("POSTGRES_PORT", "5432"))
@@ -212,11 +214,16 @@ def get_here_quota_stats() -> dict:
     with _lock:
         m_count = _in_memory_stats["monthly_count"]
         rem = max(0, HERE_MONTHLY_LIMIT - m_count)
+        cost_eur = round(m_count * HERE_COST_PER_REQ_EUR, 4)
+        budget_rem_eur = max(0.0, round(HERE_BUDGET_EUR - cost_eur, 4))
         return {
             "monthly_count": m_count,
             "daily_count": _in_memory_stats["daily_count"],
             "remaining": rem,
             "limit": HERE_MONTHLY_LIMIT,
+            "cost_eur": cost_eur,
+            "budget_eur": HERE_BUDGET_EUR,
+            "budget_remaining_eur": budget_rem_eur,
             "circuit_breaker_active": _in_memory_stats["circuit_breaker_active"],
             "total_success": _in_memory_stats["total_success"],
             "total_errors": _in_memory_stats["total_errors"]
@@ -270,14 +277,20 @@ def search_here_fuel_stations(lat: float, lon: float, radius_meters: int = 40000
                 st_lat = pos.get("lat") or pos.get("latitude")
                 st_lon = pos.get("lng") or pos.get("lon") or pos.get("longitude")
 
-                # Extract diesel price: HERE Fuel API uses '4' or 'diesel'
+                # Extract diesel price according to official HERE Fuel API v3 spec:
+                # 1 = Diesel, -1 = All Truck Diesel, -2 = All Diesel, 6 = Bio-Diesel, 10 = Diesel plus, 76 = Renewable Diesel
+                # Strictly exclude gasoline grades: 2 = Regular, 3 = Midgrade, 4 = Premium, 5 = E-85, 13 = E-10
                 prices = item.get("prices", [])
                 diesel_price = None
                 for p in prices:
-                    fuel_id = str(p.get("fuelType") or p.get("type") or "").lower()
-                    if fuel_id in ["4", "diesel", "commercial_diesel"] or "diesel" in fuel_id:
-                        diesel_price = float(p.get("price", 0))
-                        break
+                    fuel_id = str(p.get("fuelType") or p.get("type") or "").strip().lower()
+                    if fuel_id in ["2", "3", "4", "5", "13", "regular", "midgrade", "premium", "unleaded", "gasoline"]:
+                        continue
+                    if fuel_id in ["1", "-1", "-2", "6", "10", "76", "diesel", "commercial_diesel", "truck_diesel", "biodiesel"] or "diesel" in fuel_id:
+                        val = float(p.get("price", 0))
+                        if val > 0:
+                            diesel_price = val
+                            break
 
                 # Cross-check against AAA state benchmark
                 price_verified = False
@@ -317,8 +330,12 @@ def search_here_fuel_stations(lat: float, lon: float, radius_meters: int = 40000
         print(f"[WARN] HERE Fuel API query failed: {e}")
         return []
 
-    # Sort: Truck stops first, verified prices, then lowest price
-    stations.sort(key=lambda s: (s["has_truck_lanes"], s["price_verified"], -(s["diesel_price"] or 999)), reverse=True)
+    # Sort: 1. Verified diesel prices first; 2. Truck friendly / commercial lanes; 3. Lowest price
+    stations.sort(key=lambda s: (
+        not bool(s["diesel_price"] and s["price_verified"]),
+        not s["has_truck_lanes"],
+        s["diesel_price"] if s["diesel_price"] is not None else 999.0
+    ))
     return stations
 
 # Initialize on module load

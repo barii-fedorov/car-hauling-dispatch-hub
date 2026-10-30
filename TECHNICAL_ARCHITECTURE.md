@@ -1,214 +1,242 @@
 # 🛠️ Car Hauling Dispatch Hub — Техническая Архитектура & Руководство Инженера
 
-> **Полное техническое руководство по инфраструктуре, микросервисам, базам данных, RAG-конвейеру и управлению параметрами через GitHub.**
+> **Полное техническое руководство по инфраструктуре, микросервисам, базам данных, конвейеру маршрутизации ИИ, интеграциям OpenStreetMap/OSRM и мониторингу.**
 
 ---
 
-## 📌 1. Сводная таблица доступов и эндпоинтов
+## 📌 1. Сводная таблица сервисов и эндпоинтов
 
-| Сервис | Хост / URL | Порт (Docker) | Авторизация / Ключи |
+| Сервис | Хост / URL | Порт | Назначение / Ключи |
 | :--- | :--- | :--- | :--- |
 | **Хостинг VPS** | `194.127.179.231` (Clouvider) | 22 (SSH) | `ssh -i clouvider_key.pem root@194.127.179.231` |
+| **Telegram Bot Daemon** | Контейнер `dispatch_bot` | 8000 | `@CarHaulerSOS_bot` (Python 3.12 Daemon, Bot API, Prometheus метрики) |
 | **Reverse Proxy** | `Caddy 2` | 80, 443 | Автоматический TLS от Let's Encrypt / ZeroSSL |
-| **Grafana Dashboard** | `https://grafana.194.127.179.231.sslip.io` | 3000 | `admin` / `GrafanaAdminSecure2026!` |
-| **n8n Automation** | `https://n8n.194.127.179.231.sslip.io` | 5678 | Базовая авторизация n8n |
+| **Grafana Dashboard** | `https://grafana.194.127.179.231.sslip.io` | 3000 | `admin` / `GrafanaAdminSecure2026!` (Dashboard `dispatch-hub-analytics`) |
+| **Prometheus (Router)** | `http://194.127.179.231:8000/metrics` | 8000 | Экспорт метрик Model Router (`gemini_requests_total`, `gemini_latency_seconds`) |
+| **Prometheus (Server)** | `prometheus` (внутр. сеть) | 9090 | Сбор метрик cAdvisor и Docker контейнеров |
+| **cAdvisor** | `cadvisor` (внутр. сеть) | 8080 | Экспорт статистики Docker (CPU, RAM, Сеть) |
 | **PostgreSQL 16 + PostGIS** | `postgres` (внутр. сеть) | 5432 | `dispatch_admin` / `DispatchSecurePass2026!_pg` (DB: `dispatch_hub`) |
-| **Qdrant Vector DB** | `qdrant` (внутр. сеть) | 6333, 6334 | API-Key: `QdrantSecretKey2026!_vector` |
-| **Prometheus** | `prometheus` (внутр. сеть) | 9090 | Метрики cAdvisor и контейнеров |
-| **cAdvisor** | `cadvisor` (внутр. сеть) | 8080 | Экспорт статистики Docker (CPU, RAM, Network) |
-| **Telegram Userbot** | `dispatch_telethon` | — | Telethon Session + Webhook в n8n |
+| **Qdrant Vector DB** | `qdrant` (внутр. сеть) | 6333, 6334 | API-Key: `QdrantSecretKey2026!_vector` (Коллекция: `car_hauling_kb`) |
+| **News & Alerts Engine** | `dispatch_bot` (PID 8) | — | Автономный мониторинг дорожных перекрытий и генерация постов в канал |
 
 ---
 
-## 🏗️ 2. Топология Инфраструктуры
+## 🏗️ 2. Топология Архитектуры
 
-Инфраструктура развернута на базе **Docker Compose** в изолированной bridge-сети `dispatch_net`. Весь внешний трафик маршрутизируется через Caddy Reverse Proxy с поддержкой HTTPS/TLS.
+Инфраструктура развернута на базе **Docker Compose** в изолированной bridge-сети `dispatch_net`. Весь внешний трафик веб-панелей маршрутизируется через Caddy Reverse Proxy с поддержкой HTTPS/TLS, а бот работает через длинный поллинг Telegram Bot API.
 
 ```mermaid
 graph TD
-    User["Оунер / Водитель\n(Telegram / Web)"] --> Caddy["Caddy Reverse Proxy\n(Ports 80/443, Auto-TLS)"]
-    Admin["Диспетчер / Администратор"] --> Caddy
+    User["Оунер / Водитель\n(Telegram / GPS)"] -->|Updates / Geolocation| TGAPI["Telegram Bot API"]
+    TGAPI -->|Long Polling| BotDaemon["Telegram Bot Daemon\n(services/telegram_bot_daemon.py)"]
     
-    subgraph CoreStack ["Docker Compose Stack (dispatch_net)"]
-        Caddy -->|/d/*| Grafana["Grafana 11.2\n(Dashboard & Analytics)"]
-        Caddy -->|/webhook/*| N8N["n8n Automation Engine\n(LangChain Agent Orchestration)"]
-        
-        N8N --> Gemini["Google Gemini API\n(gemini-3.5-flash / embedding-2)"]
-        N8N --> Qdrant["Qdrant Vector DB\n(car_hauling_kb: 65 vectors\ndriver_case_studies)"]
-        N8N --> Postgres[("PostgreSQL 16 + PostGIS\n(dispatch_hub DB\ntable: driver_cases)")]
-        
-        Grafana --> Postgres
-        Grafana --> Prometheus["Prometheus\n(Metrics Collector)"]
-        Prometheus --> CAdvisor["cAdvisor\n(Container CPU/RAM)"]
-        
-        Telethon["Telethon Userbot\n(Telegram Ingestion)"] --> N8N
+    subgraph ServicesTier ["🛠️ Ядро Микросервисов (/services/)"]
+        RouteAdv["route_advisor.py\n(Маршруты OSRM + Nominatim)"]
+        RepairSvc["repair_service.py\n(OSM Bounded Viewbox + Stealth/Rig)"]
+        BrokerVer["broker_verifier.py\n(BMC-84 $75k + DTP + Факторинг)"]
+        OverhangAdv["overhang_advisor.py\n(FAST Act + Bridge Formula B)"]
+        ClaimGen["claim_generator.py\n(Detention, TONU, In-Op <code>...</code>)"]
+        UserProf["user_profiler.py\n(Сетап трака, Топливная карта)"]
+        AAAFuel["aaa_fuel_feed.py\n(Парсер суточных цен AAA 50 штатов)"]
+        ModelRouter["model_router.py\n(Circuit Breaker, Failover, Backoff)"]
     end
-    
-    subgraph Microservices ["Python Microservices (/services/)"]
-        FMCSA["fmcsa_verifier.py\n(SAFER & Double-Broker Check)"]
-        Diesel["diesel_collector.py\n(PADD Pricing & Rig Matching)"]
-        GDPR["case_logger_gdpr.py\n(PII Stripper & Case Logger)"]
+
+    subgraph ExternalAPIs ["🌐 Внешние Поставщики Данных"]
+        OSRM["OSRM Driving API\n(Геометрия и километраж)"]
+        OSM["OSM Nominatim\n(Геокодинг и POI мастерских)"]
+        AAASite["gasprices.aaa.com\n(Официальные суточные цены)"]
+        GeminiFlash["Google Gemini 2.5 Flash\n(Основная модель)"]
+        GeminiPro["Google Gemini 2.5 Pro\n(Резервная модель)"]
+        GeminiLegacy["Google Gemini 1.5 Flash\n(Safety Net)"]
     end
+
+    subgraph DataStorage ["🗄️ Хранилища Данных (PostgreSQL 16)"]
+        DB_Cases[("driver_cases\n(Кейсы и суммы)")]
+        DB_History[("chat_history\n(Контекст диалогов)")]
+        DB_Sessions[("driver_sessions\n(FSM состояния)")]
+        DB_Profiles[("user_profiles\n(Профили оунеров)")]
+        DB_Posts[("telegram_posts\n(Посты канала)")]
+        DB_Fuel[("state_fuel_prices\n(Кэш цен по штатам)")]
+    end
+
+    BotDaemon --> ServicesTier
+    RouteAdv --> OSRM
+    RouteAdv --> OSM
+    RouteAdv --> AAAFuel
+    RepairSvc --> OSM
+    RepairSvc --> ModelRouter
+    BrokerVer --> ModelRouter
+    OverhangAdv --> OSM
+    AAAFuel --> AAASite
     
-    N8N -.-> Microservices
+    ModelRouter --> GeminiFlash
+    ModelRouter --> GeminiPro
+    ModelRouter --> GeminiLegacy
+
+    ServicesTier --> DataStorage
+    ModelRouter --> PrometheusPort["Prometheus Metrics (:8000/metrics)"]
 ```
 
 ---
 
-## 🤖 3. Конвейер AI, RAG и Векторные Базы
+## 🤖 3. Реализация Модулей и Бизнес-Логики
 
-### 1. Используемые модели Google Gemini
-* **Основная языковая модель чата:** `models/gemini-3.5-flash`
-  * Высокий лимит (1,500 RPD на Free Tier), моментальный стриминг, нулевая задержка.
-  * Патч n8n: В библиотеку `@google/generative-ai` внедрен безопасный парсер чанков для предотвращения ошибки `Failed to parse stream`.
-* **Векторная модель эмбеддингов:** `models/gemini-embedding-2`
-  * Размерность вектора: **3072 измерения**.
-  * Метрика расстояния: **Cosine similarity**.
+### 1. Маршруты и Солярка (`services/route_advisor.py`)
+* **Геокодирование:** Разрешение географических названий и адресов через Nominatim OpenStreetMap с нативной обработкой GPS-координат.
+* **Маршрутизация:** Запрос к OSRM (`router.project-osrm.org/route/v1/driving/`) для вычисления точного расстояния в милях и списка пересекаемых штатов.
+* **Расход под сетап:**
+  * Стингер 9-кар: $5.5\text{ MPG}$ (груженый) / $6.5\text{ MPG}$ (пустой).
+  * Хай-Маунт: $6.0\text{ MPG}$.
+  * Пикап + 3–4 авто Виджик: $9.5\text{ MPG}$.
+* **Интеграция AAA и карт:** Извлечение средних суточных цен из PostgreSQL `state_fuel_prices`, применение скидки по топливной карте водителя (Mudflap, RTS, TCS) и расчет IFTA Net Cost.
 
-### 2. Коллекции в Qdrant
-1. `car_hauling_kb` (65 векторных точек):
-   * Векторизованные 13 профессиональных книг автовозного дела: Carmack Amendment, Bridge Formula B, AIAG M-22 damage codes, аукционы Copart/IAAI/Manheim, правила транспортировки электромобилей (EV).
-   * Подключена как инструмент `car_hauling_knowledge_base` в n8n LangChain Agent.
-2. `driver_case_studies`:
-   * Векторная база прецедентов, разрешенных в пользу водителей.
-   * Каждый кейс сохраняется после очистки от персональных данных (GDPR).
+### 2. Мастер рядом (`services/repair_service.py`)
+* **Прием гео-точки:** Нативная кнопка `📍 Отправить мою гео-точку` (`request_location: True`) или текст.
+* **Поиск мастерских:** Запрос к Nominatim с фильтром по ограничивающему прямоугольнику (`viewbox=[min_lon, max_lat, max_lon, min_lat]&bounded=1`).
+* **Классификация запроса (Gemini):**
+  * `cargo_stealth`: Повреждения перевозимых автомобилей (PDR, беспокрасочный ремонт, локальная полировка, оплата Cash/Zelle без внесения VIN в базу Carfax, сверка eBOL).
+  * `truck_rig`: Поломки самого автовоза (шланги гидравлики JIC 37°, аргоновая сварка 6061 T6, круглосуточный коммерческий роудсайд PIRTEK, Love's Truck Care, TA Truck Service).
+
+### 3. Проверка брокера (`services/broker_verifier.py`)
+* Проверка компании по MC-номеру через отказоустойчивый Model Router.
+* Контроль активности бонда BMC-84 (\$75,000), условий факторинга (Tier 1: Apex, RTS, OTR Capital), сроков оплаты (DTP) и признаков дабл-брокеринга.
+
+### 4. Свесы и весы (`services/overhang_advisor.py`)
+* Федеральный закон **FAST Act (23 CFR § 658.13)**:
+  * Стингер: 4 фута спереди / 6 футов сзади.
+  * Виджик / Традиционная сцепка: 3 фута спереди / 4 фута сзади.
+* Предельная высота: 13'6" (Восток) против 14'0" (Запад).
+* Контроль веса по Federal Bridge Formula B (20k/34k/80k lbs) и вывод ключевых весовых станций штата (POE Scales).
+
+### 5. Шаблоны претензий (`services/claim_generator.py`)
+* Генерация готовых юридических писем брокеру в тегах `<code>...</code>` для копирования в 1 клик:
+  * **Detention:** \$75/час после 2 часов бесплатного окна.
+  * **TONU / Dry Run:** \$250 (Copart/IAAI/Manheim), \$200 (дилеры).
+  * **In-Op:** \$150 за лебежение.
+
+### 6. Отказоустойчивый Model Router (`services/model_router.py`)
+* Автоматический Failover: `gemini-2.5-flash` $\to$ `gemini-2.5-pro` $\to$ `gemini-1.5-flash`.
+* Встроенный Circuit Breaker (предохранитель от каскадных сбоев) с экспоненциальной задержкой.
+* Экспорт метрик на порт `8000/metrics` для Prometheus и Grafana.
 
 ---
 
-## 🗄️ 4. Схема Базы Данных PostgreSQL (`driver_cases`)
-
-Для аналитики в Grafana и ведения статистики создана таблица `driver_cases`:
+## 🗄️ 4. Схема Базы Данных PostgreSQL (`dispatch_hub`)
 
 ```sql
+-- 1. Кейсы водителей и финансовая аналитика
 CREATE TABLE IF NOT EXISTS driver_cases (
     id SERIAL PRIMARY KEY,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     driver_id VARCHAR(100),              -- Необратимый хэш (например, 'drv_c2564e')
-    driver_setup VARCHAR(50) NOT NULL,   -- 'Stinger 9-car', 'High-Mount 7-car', 'Pickup + 3-4 car Wedge'
-    category VARCHAR(50) NOT NULL,       -- 'Detention', 'Inop / Winch', 'TONU / Dry Run', etc.
-    facility VARCHAR(100),               -- 'Copart', 'IAAI', 'Manheim', 'Private Dealer', 'POV'
-    facility_location VARCHAR(100),      -- Например, 'Dallas, TX'
-    state VARCHAR(10),                   -- Двухбуквенный код штата
-    broker_name VARCHAR(150),            -- Наименование брокера
-    broker_mc VARCHAR(30),               -- Номер MC (например, 'MC-582910')
+    driver_setup VARCHAR(50) NOT NULL,   -- 'Stinger 9-car', 'Pickup + Wedge', etc.
+    category VARCHAR(50) NOT NULL,       -- 'Detention', 'Inop', 'TONU'
+    facility VARCHAR(100),               -- 'Copart', 'Manheim', 'Dealer'
+    facility_location VARCHAR(100),
+    state VARCHAR(10),
+    broker_name VARCHAR(150),
+    broker_mc VARCHAR(30),
     claimed_amount NUMERIC(10,2) DEFAULT 0.00,
     recovered_amount NUMERIC(10,2) DEFAULT 0.00,
     status VARCHAR(30) DEFAULT 'Resolved',
     time_to_resolve_minutes INT DEFAULT 30,
-    sanitized_case_summary TEXT,         -- Обезличенное описание кейса (GDPR)
-    resolution_strategy TEXT             -- Использованный юридический/технический плейбук
+    sanitized_case_summary TEXT,
+    resolution_strategy TEXT
 );
 
-CREATE INDEX IF NOT EXISTS idx_driver_cases_created ON driver_cases(created_at);
-CREATE INDEX IF NOT EXISTS idx_driver_cases_category ON driver_cases(category);
-CREATE INDEX IF NOT EXISTS idx_driver_cases_status ON driver_cases(status);
-CREATE INDEX IF NOT EXISTS idx_driver_cases_setup ON driver_cases(driver_setup);
-CREATE INDEX IF NOT EXISTS idx_driver_cases_facility ON driver_cases(facility);
-```
+-- 2. История диалогов дежурного диспетчера
+CREATE TABLE IF NOT EXISTS chat_history (
+    id SERIAL PRIMARY KEY,
+    chat_id BIGINT NOT NULL,
+    role VARCHAR(16) NOT NULL,           -- 'user' | 'model'
+    message TEXT NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
 
-### Запросы, используемые в дашборде Grafana:
-* **Общая сумма выбитых средств:**
-  ```sql
-  SELECT COALESCE(SUM(recovered_amount), 0) AS total_recovered FROM driver_cases;
-  ```
-* **Процент выигрыша споров (Win Rate %):**
-  ```sql
-  SELECT ROUND((COUNT(*) FILTER (WHERE recovered_amount > 0)::numeric / GREATEST(COUNT(*), 1) * 100), 1) AS win_rate FROM driver_cases;
-  ```
-* **Распределение по типу сцепки:**
-  ```sql
-  SELECT driver_setup, COUNT(*) AS cases_count FROM driver_cases GROUP BY driver_setup ORDER BY cases_count DESC;
-  ```
+-- 3. Состояния интерактивных сценариев (FSM)
+CREATE TABLE IF NOT EXISTS driver_sessions (
+    chat_id BIGINT PRIMARY KEY,
+    state VARCHAR(64) NOT NULL DEFAULT 'idle',
+    last_query TEXT,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- 4. Профили водителей (сетап и топливная карта)
+CREATE TABLE IF NOT EXISTS user_profiles (
+    chat_id BIGINT PRIMARY KEY,
+    truck_type VARCHAR(64) DEFAULT 'Стингер 9-кар (Class 8)',
+    typical_cargo VARCHAR(64) DEFAULT 'Груженый',
+    fuel_card VARCHAR(64) DEFAULT 'Mudflap',
+    fuel_discount NUMERIC(4,2) DEFAULT 0.45,
+    primary_corridor VARCHAR(64) DEFAULT 'I-10 / I-40 / I-80',
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- 5. Посты публичного канала и согласование в кабинете
+CREATE TABLE IF NOT EXISTS telegram_posts (
+    post_id SERIAL PRIMARY KEY,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    source_url VARCHAR(500),
+    title VARCHAR(300),
+    summary TEXT,
+    content TEXT NOT NULL,
+    category VARCHAR(50),
+    severity VARCHAR(20) DEFAULT 'normal',
+    status VARCHAR(30) DEFAULT 'pending_approval',
+    cabinet_message_id BIGINT,
+    target_channel VARCHAR(100) DEFAULT '@trucks_to_base'
+);
+
+-- 6. Живой суточный фид цен на топливо от AAA
+CREATE TABLE IF NOT EXISTS state_fuel_prices (
+    state_code VARCHAR(8) PRIMARY KEY,
+    state_name VARCHAR(64) NOT NULL,
+    diesel_price NUMERIC(5,3) NOT NULL,
+    regular_price NUMERIC(5,3),
+    source VARCHAR(32) DEFAULT 'AAA',
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+```
 
 ---
 
-## 🔒 5. Конвейер GDPR-Обезличивания (`case_logger_gdpr.py`)
+## 🔒 5. Конвейер Безопасности & GDPR-Санитация
 
-Перед записью любого инцидента в базу данных и векторную память запускается конвейер санитации:
+Перед сохранением любого диалога или кейса выполняется очистка от персональных данных:
 1. **Телефоны:** Регулярное выражение `(?:\+?1[-. ]?)?\(?([0-9]{3})\)?[-. ]?([0-9]{3})[-. ]?([0-9]{4})` $\to$ `[PHONE_REDACTED]`.
 2. **Telegram Никнеймы:** `@[A-Za-z0-9_]{4,}` $\to$ `[USER_REDACTED]`.
-3. **Электронные адреса:** `\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,7}\b` $\to$ `[EMAIL_REDACTED]`.
-4. **VIN-номера автомобилей:** Первые 11 символов 17-значного VIN заменяются на звездочки, сохраняя только контрольные цифры: `([A-HJ-NPR-Z0-9]{11})([A-HJ-NPR-Z0-9]{6})` $\to$ `VIN:***\2`.
-5. **ID Водителя:** `md5(driver_id)[:6]` $\to$ необратимый хэш `drv_xxxxxx`.
+3. **VIN-номера автомобилей:** Первые 11 символов 17-значного VIN маскируются: `([A-HJ-NPR-Z0-9]{11})([A-HJ-NPR-Z0-9]{6})` $\to$ `VIN:***\2`.
+4. **Хэширование водителей:** Идентификатор чата преобразуется в необратимый вид `drv_xxxxxx`.
 
 ---
 
-## 🔄 6. Управление параметрами через GitHub и Hot-Reload
+## 🚀 6. Руководство по Развертыванию и Запуску
 
-### 1. Файл `config.json`
-Центральный файл конфигурации находится в корне репозитория и на сервере `/opt/dispatch-hub/config.json`:
-```json
-{
-  "version": "1.1.0",
-  "ai": {
-    "chat_model": "models/gemini-3.5-flash",
-    "fallback_model": "models/gemini-3.6-flash",
-    "embedding_model": "models/gemini-embedding-2",
-    "temperature": 0.2
-  },
-  "telegram": {
-    "bot_username": "@CarHaulerSOS_bot",
-    "public_channel": "@trucks_to_base",
-    "admin_cabinet_id": "-1002345678901"
-  },
-  "business_rules": {
-    "commission_rate_percent": 7.0,
-    "dry_run_auction_standard": 250,
-    "dry_run_dealer_standard": 200,
-    "detention_hourly_rate": 75,
-    "grace_period_hours": 2
-  }
-}
-```
-
-### 2. Механизм Hot-Reload без перезапуска контейнеров
-Скрипт `scripts/sync_github_config.py` реализует мгновенное применение правок из GitHub:
-1. Выполняет `git pull origin main` (или скачивает `config.json` по Raw URL).
-2. Читает обновленные параметры `ai.chat_model`, `temperature`, `business_rules`.
-3. Напрямую в PostgreSQL обновляет JSON-дерево нод `workflow_entity` (ID `aiDispatchAgent01`).
-4. При следующем сообщении водителя n8n использует **новые параметры без остановки контейнера**.
-
-### 3. Автоматизация через Cron
-Для периодической проверки обновлений из GitHub на сервере настраивается cron-задача:
+### Запуск сервисов на боевом VPS:
 ```bash
-# Проверка обновлений каждые 5 минут
-*/5 * * * * /opt/dispatch-hub/scripts/sync_github_config.sh >> /var/log/dispatch_sync.log 2>&1
-```
+# Подключение к серверу
+ssh -i clouvider_key.pem root@194.127.179.231
 
----
-
-## 🚀 7. Руководство по развертыванию с нуля
-
-### Шаг 1: Клонирование репозитория
-```bash
-git clone https://github.com/YOUR_ORGANIZATION/car-hauling-dispatch-hub.git /opt/dispatch-hub
+# Переход в директорию проекта
 cd /opt/dispatch-hub
+
+# Перезапуск контейнера бота после обновлений кодовой базы
+docker restart dispatch_bot
+
+# Проверка логов запуска и регистрации команд setMyCommands
+docker logs --tail 40 dispatch_bot
 ```
 
-### Шаг 2: Настройка переменных окружения
+### Проверка метрик Prometheus:
 ```bash
-cp .env.example .env
-nano .env  # Укажите реальные пароли, ключи Gemini и субдомены
+curl -s http://localhost:8000/metrics | grep gemini_
 ```
 
-### Шаг 3: Запуск стека Docker Compose
-```bash
-docker compose up -d
-docker ps  # Все 8 контейнеров должны иметь статус Up / healthy
-```
+---
 
-### Шаг 4: Инициализация БД PostgreSQL
-```bash
-docker exec -i dispatch_postgres psql -U dispatch_admin -d dispatch_hub < scripts/init_driver_cases.sql
-```
+## 🔮 7. Планы Развития Архитектуры (Future Plans)
 
-### Шаг 5: Проверка статуса сервисов
-```bash
-# Проверка источников данных Grafana
-docker exec dispatch_grafana curl -s -u admin:GrafanaAdminSecure2026! http://localhost:3000/api/datasources
-
-# Проверка Qdrant коллекций
-python3 services/diesel_collector.py "Stinger 9-car"
-python3 services/fmcsa_verifier.py "MC-123456"
-```
+* Интеграция с официальными API телематики (Samsara / KeepTruckin) для проактивного мониторинга HOS (Hours of Service).
+* Прямое подключение к Central Dispatch API для авто-подбора попутных грузов.
+* Расширение аналитического дашборда Grafana финансовыми когортами по оунерам на фиксированной комиссии 7%.

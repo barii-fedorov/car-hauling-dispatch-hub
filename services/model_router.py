@@ -19,20 +19,38 @@ from collections import deque
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
-# Available Gemini Model Hierarchy
+def get_api_key():
+    return os.environ.get("GEMINI_API_KEY") or GEMINI_API_KEY
+
+# Available Gemini Model Hierarchy (Active Models verified via Google AI Studio)
 MODELS = {
-    "gemini-3.5-flash": {
-        "url": f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key={GEMINI_API_KEY}",
-        "max_rpm": 15,
-        "role": "High reasoning / broker intelligence / multi-stop logistics"
+    "gemini-3.5-flash-lite": {
+        "url_template": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key={key}",
+        "max_rpm": 30,
+        "role": "Primary high-reasoning fast car hauler dispatch model"
+    },
+    "gemini-3.1-flash-lite": {
+        "url_template": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key={key}",
+        "max_rpm": 30,
+        "role": "High-throughput operational logistics & fuel dispatch"
+    },
+    "gemini-flash-lite-latest": {
+        "url_template": "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-lite-latest:generateContent?key={key}",
+        "max_rpm": 30,
+        "role": "Stable production flash-lite fallback"
     },
     "gemini-3.1-flash-lite-preview": {
-        "url": f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite-preview:generateContent?key={GEMINI_API_KEY}",
+        "url_template": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite-preview:generateContent?key={key}",
         "max_rpm": 30,
-        "role": "Fast tactical dispatch / fuel geocoding / claim customization"
+        "role": "Tactical dispatch / fuel geocoding"
+    },
+    "gemini-3.5-flash": {
+        "url_template": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key={key}",
+        "max_rpm": 15,
+        "role": "Deep dispute analysis / legal claims (monitored for 429)"
     },
     "gemini-3-flash-preview": {
-        "url": f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key={GEMINI_API_KEY}",
+        "url_template": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key={key}",
         "max_rpm": 15,
         "role": "Preview reasoning (monitored for 429)"
     }
@@ -132,6 +150,18 @@ class ModelMetricsTracker:
             lines.append(f'here_api_requests_total{{status="200"}} {hq.get("total_success", 0)}')
             lines.append(f'here_api_requests_total{{status="error"}} {hq.get("total_errors", 0)}')
 
+            lines.append("\n# HELP here_api_cost_euros Current month estimated cost in EUR")
+            lines.append("# TYPE here_api_cost_euros gauge")
+            lines.append(f'here_api_cost_euros {hq.get("cost_eur", 0.0):.4f}')
+
+            lines.append("\n# HELP here_api_budget_euros Monthly budget limit in EUR")
+            lines.append("# TYPE here_api_budget_euros gauge")
+            lines.append(f'here_api_budget_euros {hq.get("budget_eur", 10.0):.2f}')
+
+            lines.append("\n# HELP here_api_budget_remaining_euros Remaining budget in EUR")
+            lines.append("# TYPE here_api_budget_remaining_euros gauge")
+            lines.append(f'here_api_budget_remaining_euros {hq.get("budget_remaining_eur", 10.0):.4f}')
+
             lines.append("\n# HELP here_api_monthly_usage Current month requests against free tier")
             lines.append("# TYPE here_api_monthly_usage gauge")
             lines.append(f'here_api_monthly_usage {hq.get("monthly_count", 0)}')
@@ -206,29 +236,42 @@ def select_model_for_request(difficulty: int) -> str:
     if difficulty == 0:
         return "algorithmic"
 
-    # Hierarchy preference by difficulty
+    # Hierarchy preference by difficulty (verified 200 OK models)
     if difficulty >= 2:
-        preferences = ["gemini-3.5-flash", "gemini-3.1-flash-lite-preview", "gemini-3-flash-preview"]
+        preferences = [
+            "gemini-3.5-flash-lite",
+            "gemini-3.1-flash-lite",
+            "gemini-flash-lite-latest",
+            "gemini-3.5-flash",
+            "gemini-3.1-flash-lite-preview"
+        ]
     else:
-        preferences = ["gemini-3.1-flash-lite-preview", "gemini-3.5-flash", "gemini-3-flash-preview"]
+        preferences = [
+            "gemini-3.1-flash-lite",
+            "gemini-3.5-flash-lite",
+            "gemini-flash-lite-latest",
+            "gemini-3.1-flash-lite-preview"
+        ]
 
     for m in preferences:
         if metrics_tracker.is_model_available(m):
             return m
 
-    # If all preview/flash models are rate-limited, fallback to high-throughput 1.5-flash
+    # Fallback to first available lite model
     metrics_tracker.record_switch()
-    return "gemini-1.5-flash"
+    return "gemini-3.5-flash-lite"
 
 # ==========================================
 # 3. Execution with Automatic Retry & Failover
 # ==========================================
-def query_model_with_failover(prompt: str, system_prompt: str = None, context_type: str = "general") -> tuple[str, str]:
+def query_model_with_failover(prompt: str = None, system_prompt: str = None, context_type: str = "general", contents: list = None) -> tuple[str, str]:
     """
     Executes prompt using dynamic model router.
+    Supports single prompt or multi-turn conversational contents list.
     Returns (response_text, model_used).
     """
-    difficulty, reason = rate_request_difficulty(prompt, context_type=context_type)
+    eval_text = prompt or (contents[-1]["parts"][0]["text"] if contents else "")
+    difficulty, reason = rate_request_difficulty(eval_text, context_type=context_type)
     metrics_tracker.record_difficulty(difficulty)
 
     if difficulty == 0:
@@ -236,13 +279,38 @@ def query_model_with_failover(prompt: str, system_prompt: str = None, context_ty
 
     chosen_model = select_model_for_request(difficulty)
     candidate_models = [chosen_model]
-    for m in ["gemini-3.5-flash", "gemini-3.1-flash-lite-preview", "gemini-3-flash-preview"]:
+    for m in [
+        "gemini-3.5-flash-lite",
+        "gemini-3.1-flash-lite",
+        "gemini-flash-lite-latest",
+        "gemini-3.1-flash-lite-preview",
+        "gemini-3.5-flash",
+        "gemini-3-flash-preview"
+    ]:
         if m not in candidate_models:
             candidate_models.append(m)
 
     headers = {"Content-Type": "application/json"}
+    
+    # Build payload with contents (multi-turn or single turn)
+    if contents:
+        # Sanitize contents for Gemini requirements
+        sanitized = []
+        for c in contents:
+            if sanitized and sanitized[-1].get("role") == c.get("role"):
+                sanitized[-1]["parts"][0]["text"] += "\n" + c["parts"][0]["text"]
+            else:
+                sanitized.append({"role": c["role"], "parts": c["parts"]})
+        while sanitized and sanitized[0].get("role") != "user":
+            sanitized.pop(0)
+        if not sanitized:
+            sanitized = [{"role": "user", "parts": [{"text": eval_text}]}]
+        payload_contents = sanitized
+    else:
+        payload_contents = [{"role": "user", "parts": [{"text": prompt or ""}]}]
+
     payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
+        "contents": payload_contents,
         "generationConfig": {
             "temperature": 0.15,
             "maxOutputTokens": 2048
@@ -251,14 +319,17 @@ def query_model_with_failover(prompt: str, system_prompt: str = None, context_ty
     if system_prompt:
         payload["systemInstruction"] = {"parts": [{"text": system_prompt}]}
 
+    api_key = get_api_key()
+
     for model_name in candidate_models:
         model_cfg = MODELS.get(model_name)
-        if not model_cfg or not GEMINI_API_KEY:
+        if not model_cfg or not api_key:
             continue
 
+        model_url = model_cfg["url_template"].format(key=api_key)
         metrics_tracker.record_request_start(model_name)
         try:
-            req = urllib.request.Request(model_cfg["url"], data=json.dumps(payload).encode("utf-8"), headers=headers)
+            req = urllib.request.Request(model_url, data=json.dumps(payload).encode("utf-8"), headers=headers)
             with urllib.request.urlopen(req, timeout=18) as resp:
                 data = json.loads(resp.read().decode())
                 metrics_tracker.record_result(model_name, 200)

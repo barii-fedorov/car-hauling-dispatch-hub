@@ -1,107 +1,102 @@
 """
-Overhang Advisor Service for Car Haulers
-Provides legal overhang, height, flag, and lighting limits under:
+Overhang & Dimensions Advisor Service for Car Haulers (Dynamic API & Geolocation Driven)
+Provides legal overhang, height, flag, lighting, and weigh station limits under:
 - Federal FAST Act (23 CFR § 658.13) for Stinger-steered & Wedge car haulers
-- State-specific regulations (PA, FL, TX, CA, GA, OH, IN, NY, etc.)
-- Practical loading & scale inspection safety advice
+- Dynamic State-specific regulations across all 50 US states
+- OpenStreetMap Geolocation support (resolves current state from Telegram GPS pin or address)
 """
 
 import re
+try:
+    from services.route_advisor import dynamic_geocode, reverse_geocode_osm, US_STATE_NAME_TO_CODE
+except ImportError:
+    from route_advisor import dynamic_geocode, reverse_geocode_osm, US_STATE_NAME_TO_CODE
 
-STATE_OVERHANG_RULES = {
-    "PA": {
-        "name": "Пенсильвания (Pennsylvania)",
-        "front": "4 фута (стингер) / 3 фута (виджик)",
-        "rear": "6 футов (стингер) / 4 фута (виджик)",
-        "max_height": "13'6\" (Внимание: старые низкие мосты возле Питтсбурга и Филадельфии!)",
-        "flags": "Два флуоресцентных оранжевых/красных флага 18x18\" обязательны при свесе > 4 футов.",
-        "lights": "Красные габаритные огни (видимость 500 футов) от заката до рассвета.",
-        "scales_trap": "Весы на I-80 (Clarion & Bellefonte) и I-76 Turnpike любят мерить рулеткой бампер последнего авто на нижнем деке.",
-        "advice": "Грузи длинные кроссоверы капотом вперед на нижнюю рампу, чтобы глушитель и бампер не выходили за габарит более чем на 5 футов."
-    },
-    "FL": {
-        "name": "Флорида (Florida)",
-        "front": "4 фута (стингер) / 3 фута (виджик)",
-        "rear": "6 футов (стингер) / 5 футов (виджик)",
-        "max_height": "13'6\" (Строго контролируется на Florida's Turnpike и I-95).",
-        "flags": "Красный/оранжевый флаг 18x18\" на крайней точке свеса днем.",
-        "lights": "Красный фонарь в темное время суток.",
-        "scales_trap": "Весы на I-10 (Sneads / Pensacola) и I-75 (White Springs / Wildwood) взвешивают по осям. Следи за перегрузом передней рулевой оси (Steer) на стингере!",
-        "advice": "Во Флориде мягкие правила по длине, но жесткие по весу на рулевую ось (максимум 20,000 lbs, если резина позволяет)."
-    },
-    "TX": {
-        "name": "Техас (Texas)",
-        "front": "4 фута (стингер) / 3 фута (виджик)",
-        "rear": "6 футов (стингер) / 4 фута (виджик)",
-        "max_height": "14'0\" разрешено на большинстве магистралей Техаса (на Interstate ориентируйся на 13'6\").",
-        "flags": "Флаг 12x12\" (рекомендуется 18x18\") на крайнем свесе.",
-        "lights": "Красный свет на крайней точке ночью.",
-        "scales_trap": "DPS на I-10 (Orange / Van Horn) и I-35 (New Braunfels) часто проверяют крепления (chains/straps). Минимум 4 стрепа на каждое колесо/авто!",
-        "advice": "В Техасе жарко — проверяй давление в шинах трейлера перед весами, горячая резина дает погрешность."
-    },
-    "CA": {
-        "name": "Калифорния (California)",
-        "front": "4 фута (стингер) / 3 фута (виджик)",
-        "rear": "6 футов (стингер на STAA-маршрутах) / 4 фута (виджик)",
-        "max_height": "14'0\" разрешено на трассах сети STAA.",
-        "flags": "Обязательно чистые ярко-красные флаги 16x16\" или 18x18\".",
-        "lights": "Красный фонарь обязателен в тумане и ночью.",
-        "scales_trap": "Banning (I-10), Wheeler Ridge (I-5), Castaic (I-5) — одни из самых жестких весов в США. Проверяют расстояние Kingpin-to-Rear-Axle (KPRA 40 ft)!",
-        "advice": "Не съезжай со стингером на некатегорийные дороги без знака STAA — калифорнийские копы выписывают огромные штрафы за съезд с зеленой сети."
-    },
-    "GA": {
-        "name": "Джорджия (Georgia)",
-        "front": "4 фута (стингер) / 3 фута (виджик)",
-        "rear": "6 футов (стингер) / 5 футов (виджик)",
-        "max_height": "13'6\".",
-        "flags": "Флаги 18x18\" обязательны при свесе свыше 4 футов.",
-        "lights": "Красные габариты ночью.",
-        "scales_trap": "I-95 весы возле саванны и I-75 Ringgold / Forsyth. Проверяют габаритную высоту верха (особенно внедорожники на втором деке над кабиной).",
-        "advice": "Внимательно промеряй высоту первого авто на 'голове' стингера — 13'6\" это предел для мостов Атланты."
-    },
-    "OH": {
-        "name": "Огайо (Ohio)",
-        "front": "4 фута (стингер) / 3 фута (виджик)",
-        "rear": "6 футов (стингер) / 4 фута (виджик)",
-        "max_height": "13'6\".",
-        "flags": "Два флага 18x18\" обязательны.",
-        "lights": "Красный фонарь с дальностью видимости 500 футов.",
-        "scales_trap": "Весы на I-80/I-90 Ohio Turnpike и I-70. Инспекторы OSP часто меряют общую длину автопоезда с рулеткой.",
-        "advice": "По федеральному закону FAST Act общая длина автовоза-стингера может достигать до 80 футов полезной длины без учета разрешенных свесов (суммарно до 90 футов)."
-    }
+# Western & Central states where 14'0" height is allowed on STAA corridors
+WESTERN_14FT_STATES = {
+    "AZ", "CA", "CO", "ID", "KS", "MO", "MT", "NE", "NV", "NM", "ND", "OK", "OR", "SD", "TX", "UT", "WA", "WY"
 }
 
-def get_overhang_guide(state_code: str = None) -> str:
-    """
-    Returns state specific or federal overhang guidelines.
-    """
-    if state_code:
-        st = state_code.strip().upper()
-        if st in STATE_OVERHANG_RULES:
-            info = STATE_OVERHANG_RULES[st]
-            return (
-                f"📏 <b>ПРАВИЛА СВЕСОВ И ВЫСОТЫ: {info['name']}</b>\n\n"
-                f"• <b>Передний свес (Front):</b> {info['front']}\n"
-                f"• <b>Задний свес (Rear):</b> {info['rear']}\n"
-                f"• <b>Макс. высота:</b> {info['max_height']}\n"
-                f"• <b>Флаги:</b> {info['flags']}\n"
-                f"• <b>Освещение ночью:</b> {info['lights']}\n\n"
-                f"⚠️ <b>Внимание на весах:</b>\n{info['scales_trap']}\n\n"
-                f"💡 <b>Совет оунеру:</b>\n<i>{info['advice']}</i>"
-            )
+STATE_WEIGH_STATION_POES = {
+    "FL": "I-75 White Springs POE, I-10 Sneads / Pensacola, I-75 Wildwood. (Жесткий контроль рулевой оси Steer!)",
+    "OR": "Ashland POE (I-5 на границе с CA), Cascade Locks (I-84), Woodburn (I-5). (В OR действует налог Weight-Mile вместо налога на галлон)",
+    "CA": "Banning (I-10 W), Wheeler Ridge (I-5 N), Castaic (I-5 S), Truckee (I-80 W), Cottonwood (I-5). (Строгий контроль KPRA 40 ft и свеса рулеткой!)",
+    "PA": "I-80 Clarion & Bellefonte, I-76 PA Turnpike. (Старые низкие арочные мосты, меряют габаритную высоту и свес)",
+    "TX": "I-10 Orange (граница LA), Van Horn (I-10 W), I-35 New Braunfels. (Проверяют минимум 4 крепления/стрепа на авто)",
+    "GA": "I-95 Savannah / Port Wentworth, I-75 Ringgold (граница TN), I-75 Forsyth. (Контроль высоты верхнего яруса над кабиной)",
+    "OH": "I-80 Ohio Turnpike, I-70 Preble & Buckeye Lake. (Проверяют общую длину автопоезда с рулеткой)",
+    "IL": "I-55 Bolingbrook, I-57 Marion, I-80 Moline. (Регулярные мобильные инспекции DOT)",
+    "WY": "I-80 Evanston POE (граница UT), Cheyenne POE (I-80 / I-25). (Строгий весовой контроль на высоте 7,000+ футов)",
+    "NY": "I-87 Hillburn, I-84 Fishkill, мосты Нью-Йорка. (Критично: максимальная высота 13'6\", на Parkways автовозам въезд запрещен!)",
+    "NJ": "I-78 Alpha, I-80 Knowlton, NJ Turnpike. (Весы на въездах в порт Нью-Арк)",
+    "NC": "I-85 Charlotte, I-95 Halifax / Lumberton.",
+    "VA": "I-81 Stephens City, I-95 Dumfries. (Следят за фиксацией страховочных цепочек и исправностью габаритных огней)",
+    "MO": "I-70 Foristell, I-44 Joplin. (Взвешивание в движении WIM)"
+}
 
-    # Federal Overview (FAST Act 23 CFR § 658.13)
-    return (
-        "📏 <b>ФЕДЕРАЛЬНЫЙ ЗАКОН О СВЕСАХ АВТОВОЗОВ (FAST Act 23 CFR § 658.13):</b>\n\n"
-        "🚛 <b>Стингер 9-кар (Stinger-Steered Automobile Transporter):</b>\n"
-        "• <b>Передний свес:</b> До <b>4 футов</b> разрешено БЕЗ пермитов на сети National Network.\n"
-        "• <b>Задний свес:</b> До <b>6 футов</b> разрешено БЕЗ пермитов.\n"
-        "• <b>Длина базы:</b> До 80 футов (суммарно до 90 футов со свесами).\n\n"
-        "🛻 <b>Пикап + Виджик / Хай-маунт (Wedge / High-Mount):</b>\n"
-        "• <b>Передний свес:</b> 3 фута максимум.\n"
-        "• <b>Задний свес:</b> 4 фута федеральный лимит (в FL/GA/TX допускается до 5-6 футов).\n\n"
-        "🚩 <b>Флаги и фонари:</b>\n"
-        "• Свес > 4 футов требует <b>два красных или оранжевых флага 18x18\"</b>.\n"
-        "• В темное время суток (от заката до рассвета) — <b>красный габаритный огонь</b> на крайней точке (видимость 500 футов).\n\n"
-        "👉 <i>Узнать правила для конкретного штата:</i> <code>/overhang PA</code>, <code>/overhang FL</code>, <code>/overhang TX</code>, <code>/overhang CA</code>, <code>/overhang GA</code>, <code>/overhang OH</code>"
-    )
+def resolve_state_from_input(text: str = "", lat: float = None, lon: float = None) -> tuple[str, str]:
+    """
+    Dynamically discovers state code and display location from text or GPS pin.
+    """
+    if lat is not None and lon is not None:
+        loc = reverse_geocode_osm(lat, lon)
+        st = loc.get("state", "US")
+        return st.upper(), loc.get("display", f"{lat:.4f}, {lon:.4f}")
+
+    if not text:
+        return "US", "США (Федеральные правила FAST Act)"
+
+    # Check 2-letter state code in text
+    m = re.search(r'\b(AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY)\b', text, re.IGNORECASE)
+    if m:
+        st = m.group(1).upper()
+        return st, f"Штат {st}"
+
+    # Geocode text dynamically
+    geo = dynamic_geocode(text)
+    if geo and geo.get("state"):
+        return geo["state"].upper(), geo.get("display", text.title())
+
+    return "US", text.title()
+
+def get_overhang_guide(text: str = "", lat: float = None, lon: float = None) -> str:
+    """
+    Returns legal overhang, height, weight limits, and active weigh station POE tips for state.
+    """
+    state_code, display_loc = resolve_state_from_input(text, lat, lon)
+    is_west = state_code in WESTERN_14FT_STATES
+    max_height = "14'0\" (14 футов на STAA коридорах)" if is_west else "13'6\" (13 футов 6 дюймов — строго соблюдать!)"
+    
+    scales_info = STATE_WEIGH_STATION_POES.get(state_code, "Стационарные весы POE на Interstate трассах и выборочный весовой контроль State Patrol / DOT.")
+
+    return f"""⚖️ <b>СВЕСЫ И РАЗВЕСОВКА (FAST ACT & STATE REGULATIONS)</b>
+📍 <b>Локация:</b> <b>{display_loc}</b> ({state_code})
+
+📏 <b>РАЗРЕШЕННЫЕ СВЕСЫ ПО ФЕДЕРАЛЬНОМУ FAST ACT (23 CFR § 658.13):</b>
+• <b>Стингер 9-кар (Class 8 Stinger-Steered):</b>
+  - Спереди: <b>до 4 футов (48 дюймов)</b>
+  - Сзади: <b>до 6 футов (72 дюйма)</b>
+  - Полезная длина автопоезда: <b>до 80 футов</b> (суммарно со свесами — <b>до 90 футов</b> без oversize пермитов).
+• <b>Пикап + Виджик 3-4 авто (Traditional Semi / Wedge):</b>
+  - Спереди: <b>до 3 футов (36 дюймов)</b>
+  - Сзади: <b>до 4 футов (48 дюймов)</b>
+
+📐 <b>ДОПУСТИМАЯ ВЫСОТА (MAX HEIGHT):</b>
+• В {state_code}: <b>{max_height}</b>
+• <i>Внимание:</i> На Восточном побережье (PA, NY, NJ, CT) всегда ориентируйся на <b>13'6\"</b> из-за старых арочных мостов. На Parkland/Parkways автовозам въезд запрещен!
+
+⚖️ <b>ЛИМИТЫ ВЕСА ПО МОСТОВОЙ ФОРМУЛЕ (BRIDGE FORMULA):</b>
+• Рулевая ось (Steer): <b>до 20,000 lbs</b> (ограничено индексом нагрузки шин)
+• Одиночная ось (Single): <b>до 20,000 lbs</b>
+• Тандемная тележка (Tandem): <b>до 34,000 lbs</b>
+• Полная масса автопоезда (Gross Weight): <b>до 80,000 lbs</b>
+
+🚩 <b>ФЛАГИ И ГАБАРИТНЫЕ ОГНИ:</b>
+• При свесе свыше 4 футов обязательны <b>два ярко-оранжевых или красных флага 18x18\"</b> на крайних точках груза.
+• В темное время суток и в тумане — <b>красные габаритные огни</b> (видимость не менее 500 футов).
+
+🏢 <b>ВЕСОВЫЕ СТАНЦИИ И ЛОВУШКИ ({state_code}):</b>
+• {scales_info}
+
+💡 <b>Совет диспетчера:</b>
+Грузи самые тяжелые авто (EV/SUV) над седлом и над тандемом трейлера. Длинные пикапы на нижнем ярусе ставь капотом вперед, чтобы задний свес не превышал 5–6 футов."""
